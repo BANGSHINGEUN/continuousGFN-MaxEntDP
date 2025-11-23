@@ -25,6 +25,8 @@ from utils import (
     plot_termination_probabilities,
 )
 
+import config
+
 try:
     import wandb
 except ModuleNotFoundError:
@@ -35,72 +37,73 @@ USE_WANDB = True
 NO_PLOT = False
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--dim", type=int, default=2)
-parser.add_argument("--delta", type=float, default=0.25)
-parser.add_argument("--env_epsilon", type=float, default=1e-10)
+parser.add_argument("--device", type=str, default=config.DEVICE)
+parser.add_argument("--dim", type=int, default=config.DIM)
+parser.add_argument("--delta", type=float, default=config.DELTA)
+parser.add_argument("--env_epsilon", type=float, default=config.ENV_EPSILON)
 parser.add_argument(
     "--n_components",
     type=int,
-    default=2,
+    default=config.N_COMPONENTS,
     help="Number of components in Mixture Of Betas",
 )
 
-parser.add_argument("--reward_debug", action="store_true", default=False)
+parser.add_argument("--reward_debug", action="store_true", default=config.REWARD_DEBUG)
 
 parser.add_argument(
     "--n_components_s0",
     type=int,
-    default=4,
+    default=config.N_COMPONENTS_S0,
     help="Number of components in Mixture Of Betas",
 )
 parser.add_argument(
     "--beta_min",
     type=float,
-    default=0.1,
+    default=config.BETA_MIN,
     help="Minimum value for the concentration parameters of the Beta distribution",
 )
 parser.add_argument(
     "--beta_max",
     type=float,
-    default=5.0,
+    default=config.BETA_MAX,
     help="Maximum value for the concentration parameters of the Beta distribution",
 )
 parser.add_argument(
-    "--loss", type=str, choices=["tb", "db", "modifieddb", "reinforce_tb"], default="tb"
+    "--loss", type=str, choices=["tb", "db", "modifieddb", "reinforce_tb"], default=config.LOSS
 )
 parser.add_argument(
     "--alpha",
     type=float,
-    default=1.0,
+    default=config.ALPHA,
     help="Weight of the reward term in DB",
 )
 parser.add_argument(
     "--alpha_schedule",
     type=float,
-    default=1.0,
+    default=config.ALPHA_SCHEDULE,
     help="every 1000 iterations, divide alpha by this value - the maximum value of alpha is 1.0",
 )
 parser.add_argument(
     "--PB",
     type=str,
     choices=["learnable", "tied", "uniform"],
-    default="learnable",
+    default=config.PB,
 )
-parser.add_argument("--gamma_scheduler", type=float, default=0.5)
-parser.add_argument("--scheduler_milestone", type=int, default=2500)
-parser.add_argument("--seed", type=int, default=0)
-parser.add_argument("--lr", type=float, default=1e-3)
-parser.add_argument("--lr_Z", type=float, default=1e-3)
-parser.add_argument("--lr_F", type=float, default=1e-2)
-parser.add_argument("--tie_F", action="store_true", default=False)
-parser.add_argument("--BS", type=int, default=128)
-parser.add_argument("--n_iterations", type=int, default=20000)
-parser.add_argument("--hidden_dim", type=int, default=128)
-parser.add_argument("--n_hidden", type=int, default=3)
-parser.add_argument("--n_evaluation_trajectories", type=int, default=10000)
-parser.add_argument("--no_plot", action="store_true", default=False)
-parser.add_argument("--no_wandb", action="store_true", default=False)
-parser.add_argument("--wandb_project", type=str, default="continuous_gflownets")
+parser.add_argument("--gamma_scheduler", type=float, default=config.GAMMA_SCHEDULER)
+parser.add_argument("--scheduler_milestone", type=int, default=config.SCHEDULER_MILESTONE)
+parser.add_argument("--seed", type=int, default=config.SEED)
+parser.add_argument("--lr", type=float, default=config.LR)
+parser.add_argument("--lr_Z", type=float, default=config.LR_Z)
+parser.add_argument("--lr_F", type=float, default=config.LR_F)
+parser.add_argument("--tie_F", action="store_true", default=config.TIE_F)
+parser.add_argument("--BS", type=int, default=config.BS)
+parser.add_argument("--n_iterations", type=int, default=config.N_ITERATIONS)
+parser.add_argument("--hidden_dim", type=int, default=config.HIDDEN_DIM)
+parser.add_argument("--n_hidden", type=int, default=config.N_HIDDEN)
+parser.add_argument("--n_evaluation_trajectories", type=int, default=config.N_EVALUATION_TRAJECTORIES)
+parser.add_argument("--no_plot", action="store_true", default=config.NO_PLOT)
+parser.add_argument("--no_wandb", action="store_true", default=config.NO_WANDB)
+parser.add_argument("--wandb_project", type=str, default=config.WANDB_PROJECT)
 args = parser.parse_args()
 
 if args.no_plot:
@@ -113,6 +116,7 @@ if USE_WANDB:
     wandb.init(project=args.wandb_project, save_code=True)
     wandb.config.update(args)
 
+device = args.device
 dim = args.dim
 delta = args.delta
 seed = args.seed
@@ -138,11 +142,13 @@ if USE_WANDB:
 torch.manual_seed(seed)
 np.random.seed(seed)
 
+print(f"Using device: {device}")
+
 env = Box(
     dim=dim,
     delta=delta,
     epsilon=args.env_epsilon,
-    device_str="cpu",
+    device_str=device,
     reward_debug=args.reward_debug,
 )
 
@@ -169,7 +175,7 @@ model = CirclePF(
     n_components_s0=n_components_s0,
     beta_min=args.beta_min,
     beta_max=args.beta_max,
-)
+).to(device)
 bw_model = CirclePB(
     hidden_dim=args.hidden_dim,
     n_hidden=args.n_hidden,
@@ -178,17 +184,17 @@ bw_model = CirclePB(
     n_components=n_components,
     beta_min=args.beta_min,
     beta_max=args.beta_max,
-)
+).to(device)
 if args.loss == "db":
     flow_model = NeuralNet(
         hidden_dim=args.hidden_dim,
         n_hidden=args.n_hidden,
         torso=None if not args.tie_F else model.torso,
         output_dim=1,
-    )
+    ).to(device)
 
 
-logZ = torch.zeros(1, requires_grad=True)
+logZ = torch.zeros(1, requires_grad=True, device=device)
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 if args.PB != "uniform":
     optimizer.add_param_group(
@@ -351,53 +357,42 @@ for i in trange(n_iterations):
         raise ValueError("NaN in model parameters")
 
     if i % 100 == 0:
-        if USE_WANDB:
-            wandb.log(
-                {
-                    "loss": loss.item(),
-                    "logZdiff": np.log(env.Z) - logZ.item(),
-                    "states_visited": (i + 1) * BS,
-                },
-                step=i,
+        log_dict = {
+            "loss": loss.item(),
+            "logZdiff": np.log(env.Z) - logZ.item(),
+            "states_visited": (i + 1) * BS,
+        }
+
+        # Evaluate JSD every 500 iterations and add to the same log
+        if i % 500 == 0:
+            trajectories, _, _, _ = sample_trajectories(
+                env, model, args.n_evaluation_trajectories
             )
+            last_states = get_last_states(env, trajectories)
+            kde, fig4 = fit_kde(last_states, plot=True)
+            jsd = estimate_jsd(kde, true_kde)
+
+            log_dict["JSD"] = jsd
+
+            if not NO_PLOT:
+                colors = plt.cm.rainbow(np.linspace(0, 1, 10))
+                fig1 = plot_samples(last_states[:2000].detach().cpu().numpy())
+                fig2 = plot_trajectories(trajectories.detach().cpu().numpy()[:20])
+                fig3 = plot_termination_probabilities(model)
+
+                log_dict["last_states"] = wandb.Image(fig1)
+                log_dict["trajectories"] = wandb.Image(fig2)
+                log_dict["termination_probs"] = wandb.Image(fig3)
+                log_dict["kde"] = wandb.Image(fig4)
+
+        if USE_WANDB:
+            wandb.log(log_dict, step=i)
+
         tqdm.write(
             # Loss with 3 digits of precision, logZ with 2 digits of precision, true logZ with 2 digits of precision
             # Last computed JSD with 4 digits of precision
             f"States: {(i + 1) * BS}, Loss: {loss.item():.3f}, logZ: {logZ.item():.2f}, true logZ: {np.log(env.Z):.2f}, JSD: {jsd:.4f}"
         )
-    if i % 500 == 0:
-        trajectories, _, _, _ = sample_trajectories(
-            env, model, args.n_evaluation_trajectories
-        )
-        last_states = get_last_states(env, trajectories)
-        kde, fig4 = fit_kde(last_states, plot=True)
-        jsd = estimate_jsd(kde, true_kde)
-
-        if USE_WANDB:
-            if NO_PLOT:
-                wandb.log(
-                    {
-                        "JSD": jsd,
-                    },
-                    step=i,
-                )
-            else:
-                colors = plt.cm.rainbow(np.linspace(0, 1, 10))
-
-                fig1 = plot_samples(last_states[:2000].detach().cpu().numpy())
-                fig2 = plot_trajectories(trajectories.detach().cpu().numpy()[:20])
-                fig3 = plot_termination_probabilities(model)
-
-                wandb.log(
-                    {
-                        "last_states": wandb.Image(fig1),
-                        "trajectories": wandb.Image(fig2),
-                        "termination_probs": wandb.Image(fig3),
-                        "kde": wandb.Image(fig4),
-                        "JSD": jsd,
-                    },
-                    step=i,
-                )
 
 
 if USE_WANDB:

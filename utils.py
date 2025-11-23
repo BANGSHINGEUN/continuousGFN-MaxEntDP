@@ -42,8 +42,9 @@ def plot_transitions(env, states, new_states):
 def fit_kde(
     last_states, kernel="exponential", bandwidth=0.1, plot=False, show_plot=False
 ):
-    kde = KernelDensity(kernel=kernel, bandwidth=bandwidth).fit(last_states.numpy())
-
+    kde = KernelDensity(kernel=kernel, bandwidth=bandwidth).fit(
+        last_states.detach().cpu().numpy()
+    )
     fig = None
     if plot:
         test_states, n = get_test_states()
@@ -87,10 +88,12 @@ def plot_termination_probabilities(model, plot=False):
     fig = plt.figure(figsize=(6 * 16 / 9, 6))
     test_states, n = get_test_states()
 
-    out = model(torch.FloatTensor(test_states))
+    # Ensure evaluation runs on the same device as the model to avoid CPU/GPU mismatch
+    device = next(model.parameters()).device
+    out = model(torch.as_tensor(test_states, dtype=torch.float32, device=device))
     termination_probs = torch.sigmoid(out[0]).reshape(n, n)
 
-    plt.imshow(termination_probs.detach().numpy(), cmap="hot")
+    plt.imshow(termination_probs.detach().cpu().numpy(), cmap="hot")
     plt.xlim(0, n)
     plt.ylim(0, n)
     plt.xticks([])
