@@ -1,5 +1,6 @@
 import torch
 from torch.distributions import MultivariateNormal
+from rewards import get_reward_function, get_Z_function
 
 
 class Box:
@@ -15,6 +16,7 @@ class Box:
         R0=0.1,
         R1=0.5,
         R2=2.0,
+        reward_type="baseline",
         reward_debug=False,
         device_str="cpu",
         verify_actions=False,
@@ -29,10 +31,29 @@ class Box:
         self.sink_state = torch.full((dim,), -float("inf"), device=self.device)
         self.verify_actions = verify_actions
 
+        # Reward parameters
         self.R0 = R0
         self.R1 = R1
         self.R2 = R2
+        self.reward_type = reward_type
         self.reward_debug = reward_debug
+
+        # Basic parameters passed to reward functions
+        # Reward-specific parameters (radius, sigma, etc.) are defined in rewards.py
+        self.reward_params = {
+            'R0': R0,
+            'R1': R1,
+            'R2': R2,
+            'delta': delta,
+        }
+
+        # Get reward and Z functions
+        if self.reward_debug:
+            self.reward_fn = get_reward_function('debug')
+            self.Z_fn = get_Z_function('debug')
+        else:
+            self.reward_fn = get_reward_function(reward_type)
+            self.Z_fn = get_Z_function(reward_type)
 
     def is_actions_valid(self, states, actions
     ):
@@ -89,32 +110,13 @@ class Box:
         return new_states
 
     def reward(self, final_states):
-        R0, R1, R2 = (self.R0, self.R1, self.R2)
-        ax = abs(final_states - 0.5)
-        if not self.reward_debug:
-            reward = (
-                R0 + (0.25 < ax).prod(-1) * R1 + ((0.3 < ax) * (ax < 0.4)).prod(-1) * R2
-            )
-        elif self.reward_debug:
-            reward = torch.ones(final_states.shape[0], device=self.device)
-            reward[final_states.norm(dim=-1) > self.delta] = 1e-8
-        else:
-            raise NotImplementedError
-
-        return reward
+        """Compute reward for final states using the configured reward function."""
+        return self.reward_fn(final_states, **self.reward_params)
 
     @property
     def Z(self):
-        if not self.reward_debug:
-            return (
-                self.R0
-                + (2 * 0.25) ** self.dim * self.R1
-                + (2 * 0.1) ** self.dim * self.R2
-            )
-        else:
-            if self.dim != 2:
-                raise NotImplementedError("Only implemented for dim=2")
-            return torch.pi * self.delta ** 2 / 4.
+        """Compute partition function using the configured Z function."""
+        return self.Z_fn(self.dim, **self.reward_params)
 
 
 def get_last_states(env: Box, trajectories):

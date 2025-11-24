@@ -12,6 +12,10 @@ DELTA = 0.25
 ENV_EPSILON = 1e-10
 REWARD_DEBUG = False
 
+# Reward configuration
+# To change reward-specific parameters (radius, sigma, etc.), edit rewards.py directly
+REWARD_TYPE = "baseline"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture"
+
 # Model parameters
 N_COMPONENTS = 2  # Number of components in Mixture Of Betas
 N_COMPONENTS_S0 = 4  # Number of components in Mixture Of Betas for s0

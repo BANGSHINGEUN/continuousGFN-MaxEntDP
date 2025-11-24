@@ -49,7 +49,13 @@ parser.add_argument(
 )
 
 parser.add_argument("--reward_debug", action="store_true", default=config.REWARD_DEBUG)
-
+parser.add_argument(
+    "--reward_type",
+    type=str,
+    choices=["baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture"],
+    default=config.REWARD_TYPE,
+    help="Type of reward function to use. To modify reward-specific parameters (radius, sigma, etc.), edit rewards.py"
+)
 parser.add_argument(
     "--n_components_s0",
     type=int,
@@ -132,7 +138,7 @@ loss_type = args.loss
 if seed == 0:
     seed = np.random.randint(int(1e6))
 
-run_name = f"d{delta}_{loss_type}_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
+run_name = f"d{delta}_{args.reward_type}_{loss_type}_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
 run_name += f"_n{n_components}_n0{n_components_s0}"
 run_name += f"_gamma{args.gamma_scheduler}_mile{args.scheduler_milestone}"
 print(run_name)
@@ -149,6 +155,7 @@ env = Box(
     delta=delta,
     epsilon=args.env_epsilon,
     device_str=device,
+    reward_type=args.reward_type,
     reward_debug=args.reward_debug,
 )
 

@@ -105,6 +105,40 @@ def sample_trajectories(env, model, n_trajectories):
     return trajectories, actionss, trajectories_logprobs, all_logprobs
 
 
+def evaluate_backward_step_logprobs(env, model, current_states, previous_states):
+    difference_1 = current_states[:, 0] - previous_states[:, 0]
+    difference_1.clamp_(
+        min=0.0, max=env.delta
+    )  # Should be the case already - just to avoid numerical issues
+    A = torch.where(
+        current_states[:, 0] >= env.delta,
+        0.0,
+        2.0 / torch.pi * torch.arccos((current_states[:, 0]) / env.delta),
+    )
+    B = torch.where(
+        current_states[:, 1] >= env.delta,
+        1.0,
+        2.0 / torch.pi * torch.arcsin((current_states[:, 1]) / env.delta),
+    )
+
+    dist = model.to_dist(current_states)
+
+    step_logprobs = (
+        dist.log_prob(
+            (
+                1.0
+                / (B - A)
+                * (2.0 / torch.pi * torch.acos(difference_1 / env.delta) - A)
+            ).clamp(1e-4, 1 - 1e-4)
+        ).clamp_max(100)
+        - np.log(env.delta)
+        - np.log(np.pi / 2)
+        - torch.log(B - A)
+    )
+
+    return step_logprobs
+
+
 def evaluate_backward_logprobs(env, model, trajectories):
     logprobs = torch.zeros((trajectories.shape[0],), device=env.device)
     all_logprobs = []
@@ -115,34 +149,9 @@ def evaluate_backward_logprobs(env, model, trajectories):
         non_sink_mask = torch.all(trajectories[:, i] != env.sink_state, dim=-1)
         current_states = trajectories[:, i][non_sink_mask]
         previous_states = trajectories[:, i - 1][non_sink_mask]
-        difference_1 = current_states[:, 0] - previous_states[:, 0]
-        difference_1.clamp_(
-            min=0.0, max=env.delta
-        )  # Should be the case already - just to avoid numerical issues
-        A = torch.where(
-            current_states[:, 0] >= env.delta,
-            0.0,
-            2.0 / torch.pi * torch.arccos((current_states[:, 0]) / env.delta),
-        )
-        B = torch.where(
-            current_states[:, 1] >= env.delta,
-            1.0,
-            2.0 / torch.pi * torch.arcsin((current_states[:, 1]) / env.delta),
-        )
 
-        dist = model.to_dist(current_states)
-
-        step_logprobs = (
-            dist.log_prob(
-                (
-                    1.0
-                    / (B - A)
-                    * (2.0 / torch.pi * torch.acos(difference_1 / env.delta) - A)
-                ).clamp(1e-4, 1 - 1e-4)
-            ).clamp_max(100)
-            - np.log(env.delta)
-            - np.log(np.pi / 2)
-            - torch.log(B - A)
+        step_logprobs = evaluate_backward_step_logprobs(
+            env, model, current_states, previous_states
         )
 
         if torch.any(torch.isnan(step_logprobs)):
@@ -160,75 +169,3 @@ def evaluate_backward_logprobs(env, model, trajectories):
     all_logprobs = torch.stack(all_logprobs, dim=1)
 
     return logprobs, all_logprobs.flip(1)
-
-
-def evaluate_state_flows(env, model, trajectories, logZ):
-    state_flows = torch.full(
-        (trajectories.shape[0], trajectories.shape[1]),
-        -float("inf"),
-        device=trajectories.device,
-    )
-    non_sink_mask = torch.all(trajectories != env.sink_state, dim=-1)
-    state_flows[non_sink_mask] = model(trajectories[non_sink_mask]).squeeze(-1)
-    state_flows[:, 0] = logZ
-
-    return state_flows[:, :-1]
-
-
-if __name__ == "__main__":
-    from model import CirclePF, CirclePB, NeuralNet
-    from env import Box, get_last_states
-
-    env = Box(dim=2, delta=0.25)
-
-    model = CirclePF()
-    bw_model = CirclePB()
-
-    flow = NeuralNet(output_dim=1)
-
-    logZ = torch.zeros(1, requires_grad=True)
-
-    trajectories, actionss, logprobs, all_logprobs = sample_trajectories(env, model, 5)
-
-    bw_logprobs, all_bw_logprobs = evaluate_backward_logprobs(
-        env, bw_model, trajectories
-    )
-
-    exits = torch.full(
-        (trajectories.shape[0], trajectories.shape[1] - 1), -float("inf")
-    )
-    msk = torch.all(trajectories[:, 1:] != -float("inf"), dim=-1)
-    middle_states = trajectories[:, 1:][msk]
-    exit_proba, _ = model.to_dist(middle_states)
-    true_exit_log_probs = torch.zeros_like(exit_proba)  # type: ignore
-    edgy_middle_states_mask = torch.norm(1 - middle_states, dim=-1) <= env.delta
-    other_edgy_middle_states_mask = torch.any(middle_states >= 1 - env.epsilon, dim=-1)
-    true_exit_log_probs[edgy_middle_states_mask] = 0
-    true_exit_log_probs[other_edgy_middle_states_mask] = 0
-    true_exit_log_probs[
-        ~edgy_middle_states_mask & ~other_edgy_middle_states_mask
-    ] = torch.log(
-        exit_proba[~edgy_middle_states_mask & ~other_edgy_middle_states_mask]  # type: ignore
-    )
-
-    exits[msk] = true_exit_log_probs
-    exits = torch.cat([torch.zeros((trajectories.shape[0], 1)), exits], dim=1)
-    non_infinity_mask = all_logprobs != -float("inf")
-    _, indices = torch.max(non_infinity_mask.flip(1), dim=1)
-    indices = all_logprobs.shape[1] - indices - 1
-    new_all_logprobs = all_logprobs.scatter(1, indices.unsqueeze(1), -float("inf"))
-
-    all_log_rewards = torch.full(
-        (trajectories.shape[0], trajectories.shape[1] - 1), -float("inf")
-    )
-    log_rewards = env.reward(trajectories[:, 1:][msk]).log()
-    all_log_rewards[msk] = log_rewards
-
-    all_log_rewards = torch.cat(
-        [logZ * torch.ones((trajectories.shape[0], 1)), all_log_rewards], dim=1
-    )
-    preds = new_all_logprobs[:, :-1] + exits[:, 1:-1] + all_log_rewards[:, :-2]
-    targets = all_bw_logprobs + exits[:, :-2] + all_log_rewards[:, 1:-1]
-    flat_preds = preds[preds != -float("inf")]
-    flat_targets = targets[targets != -float("inf")]
-    loss = torch.mean((flat_preds - flat_targets) ** 2)
