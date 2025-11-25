@@ -13,6 +13,8 @@ from sampling import (
     sample_trajectories,
     evaluate_backward_logprobs,
 )
+from sac import SAC
+from sac_replay_memory import ReplayMemory, trajectories_to_transitions
 
 from utils import (
     fit_kde,
@@ -24,7 +26,7 @@ from utils import (
     plot_termination_probabilities,
 )
 
-import config
+import sac_config as config
 
 try:
     import wandb
@@ -74,33 +76,16 @@ parser.add_argument(
     help="Maximum value for the concentration parameters of the Beta distribution",
 )
 parser.add_argument(
-    "--loss", type=str, choices=["tb", "db", "modifieddb", "reinforce_tb"], default=config.LOSS
-)
-parser.add_argument(
-    "--alpha",
-    type=float,
-    default=config.ALPHA,
-    help="Weight of the reward term in DB",
-)
-parser.add_argument(
-    "--alpha_schedule",
-    type=float,
-    default=config.ALPHA_SCHEDULE,
-    help="every 1000 iterations, divide alpha by this value - the maximum value of alpha is 1.0",
-)
-parser.add_argument(
     "--PB",
     type=str,
     choices=["learnable", "tied", "uniform"],
     default=config.PB,
+    help="Backward policy type",
 )
 parser.add_argument("--gamma_scheduler", type=float, default=config.GAMMA_SCHEDULER)
 parser.add_argument("--scheduler_milestone", type=int, default=config.SCHEDULER_MILESTONE)
 parser.add_argument("--seed", type=int, default=config.SEED)
-parser.add_argument("--lr", type=float, default=config.LR)
-parser.add_argument("--lr_Z", type=float, default=config.LR_Z)
-parser.add_argument("--lr_F", type=float, default=config.LR_F)
-parser.add_argument("--tie_F", action="store_true", default=config.TIE_F)
+parser.add_argument("--lr", type=float, default=config.LR, help="Learning rate for SAC")
 parser.add_argument("--BS", type=int, default=config.BS)
 parser.add_argument("--n_iterations", type=int, default=config.N_ITERATIONS)
 parser.add_argument("--hidden_dim", type=int, default=config.HIDDEN_DIM)
@@ -109,6 +94,18 @@ parser.add_argument("--n_evaluation_trajectories", type=int, default=config.N_EV
 parser.add_argument("--no_plot", action="store_true", default=config.NO_PLOT)
 parser.add_argument("--no_wandb", action="store_true", default=config.NO_WANDB)
 parser.add_argument("--wandb_project", type=str, default=config.WANDB_PROJECT)
+
+# SAC-specific arguments
+parser.add_argument("--policy", type=str, default="Gaussian", help="Policy type")
+parser.add_argument("--tau", type=float, default=config.TAU, help="Target smoothing coefficient")
+parser.add_argument("--sac_alpha", type=float, default=config.SAC_ALPHA, help="SAC temperature parameter")
+parser.add_argument("--automatic_entropy_tuning", action="store_true", default=config.AUTOMATIC_ENTROPY_TUNING, help="Automatically adjust alpha")
+parser.add_argument("--target_update_interval", type=int, default=config.TARGET_UPDATE_INTERVAL, help="Target network update interval")
+parser.add_argument("--Critic_hidden_size", type=int, default=config.CRITIC_HIDDEN_SIZE, help="Hidden size for SAC critic networks")
+parser.add_argument("--replay_size", type=int, default=config.REPLAY_SIZE, help="Replay buffer size")
+parser.add_argument("--sac_batch_size", type=int, default=config.SAC_BATCH_SIZE, help="SAC batch size")
+parser.add_argument("--updates_per_step", type=int, default=config.UPDATES_PER_STEP, help="SAC updates per step")
+
 args = parser.parse_args()
 
 if args.no_plot:
@@ -126,20 +123,18 @@ dim = args.dim
 delta = args.delta
 seed = args.seed
 lr = args.lr
-lr_Z = args.lr_Z
-lr_F = args.lr_F
 n_iterations = args.n_iterations
 BS = args.BS
 n_components = args.n_components
 n_components_s0 = args.n_components_s0
-loss_type = args.loss
 
 if seed == 0:
     seed = np.random.randint(int(1e6))
 
-run_name = f"d{delta}_{args.reward_type}_{loss_type}_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
+run_name = f"SAC_d{delta}_{args.reward_type}_PB{args.PB}_lr{lr}_sd{seed}"
 run_name += f"_n{n_components}_n0{n_components_s0}"
 run_name += f"_gamma{args.gamma_scheduler}_mile{args.scheduler_milestone}"
+run_name += f"_sac_alpha{args.sac_alpha}_batch{args.sac_batch_size}"
 print(run_name)
 if USE_WANDB:
     wandb.run.name = run_name  # type: ignore
@@ -174,59 +169,30 @@ if USE_WANDB:
     )
 
 
-model = CirclePF(
-    hidden_dim=args.hidden_dim,
-    n_hidden=args.n_hidden,
-    n_components=n_components,
-    n_components_s0=n_components_s0,
-    beta_min=args.beta_min,
-    beta_max=args.beta_max,
-).to(device)
+# Create SAC agent (includes CirclePF as policy)
+sac_agent = SAC(args, env)
+
+# Create replay memory
+memory = ReplayMemory(args.replay_size, seed, device=device)
 
 bw_model = CirclePB(
     hidden_dim=args.hidden_dim,
     n_hidden=args.n_hidden,
-    torso=model.torso if args.PB == "tied" else None,
+    torso=sac_agent.policy.torso if args.PB == "tied" else None,
     uniform=args.PB == "uniform",
     n_components=n_components,
     beta_min=args.beta_min,
     beta_max=args.beta_max,
 ).to(device)
 
-
-logZ = torch.zeros(1, requires_grad=True, device=device)
-optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-if args.PB != "uniform":
-    optimizer.add_param_group(
-        {
-            "params": bw_model.output_layer.parameters()
-            if args.PB == "tied"
-            else bw_model.parameters(),
-            "lr": lr,
-        }
-    )
-optimizer.add_param_group({"params": [logZ], "lr": lr_Z})
-
-
-scheduler = torch.optim.lr_scheduler.MultiStepLR(
-    optimizer,
-    milestones=[i * args.scheduler_milestone for i in range(1, 10)],
-    gamma=args.gamma_scheduler,
-)
-
 jsd = float("inf")
+sac_updates = 0  # Track SAC update steps
 
-current_alpha = args.alpha * args.alpha_schedule
+for i in trange(1, n_iterations + 1):
 
-for i in trange(n_iterations):
-    if i % 1000 == 0:
-        current_alpha = max(current_alpha / args.alpha_schedule, 1.0)
-        print(f"current optimizer LR: {optimizer.param_groups[0]['lr']}")
-
-    optimizer.zero_grad()
     trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
         env,
-        model,
+        sac_agent.policy,
         BS,
     )
     last_states = get_last_states(env, trajectories)
@@ -235,42 +201,43 @@ for i in trange(n_iterations):
         env, bw_model, trajectories
     )
 
-    if loss_type == "tb":
-        loss = torch.mean((logZ + logprobs - bw_logprobs - logrewards) ** 2)
-    else:
-        raise ValueError("Unknown loss type")
-    if torch.isinf(loss):
-        raise ValueError("Infinite loss")
-    loss.backward()
-    # clip the gradients for bw_model
-    for p in bw_model.parameters():
-        if p.grad is not None:
-            p.grad.data.clamp_(-10, 10).nan_to_num_(0.0)
-    for p in model.parameters():
-        if p.grad is not None:
-            p.grad.data.clamp_(-10, 10).nan_to_num_(0.0)
-    optimizer.step()
-    scheduler.step()
+    # Convert trajectories to transitions and push to replay memory
+    all_states, all_actions, all_rewards, all_next_states, all_dones = trajectories_to_transitions(
+        trajectories, actionss, all_bw_logprobs, last_states, logrewards, env
+    )
+    memory.push_batch(all_states, all_actions, all_rewards, all_next_states, all_dones)
+
+    if len(memory) > args.sac_batch_size:
+        for _ in range(args.updates_per_step):
+            qf1_loss, qf2_loss, policy_loss, alpha_loss, alpha = sac_agent.update_parameters(memory, args.sac_batch_size, sac_updates)
+            sac_updates += 1
+        # Step the scheduler once per iteration (not per update)
+        sac_agent.policy_scheduler.step()
 
     if any(
         [
-            torch.isnan(list(model.parameters())[i]).any()
-            for i in range(len(list(model.parameters())))
+            torch.isnan(list(sac_agent.policy.parameters())[i]).any()
+            for i in range(len(list(sac_agent.policy.parameters())))
         ]
     ):
         raise ValueError("NaN in model parameters")
 
     if i % 100 == 0:
         log_dict = {
-            "loss": loss.item(),
-            "logZdiff": np.log(env.Z) - logZ.item(),
-            "states_visited": (i + 1) * BS,
+            "sac/critic_1_loss": qf1_loss,
+            "sac/critic_2_loss": qf2_loss,
+            "sac/policy_loss": policy_loss,
+            "sac/alpha_loss": alpha_loss,
+            "sac/alpha": alpha,
+            "sac/updates": sac_updates,
+            "sac/replay_size": len(memory),
+            "states_visited": i * BS,
         }
 
         # Evaluate JSD every 500 iterations and add to the same log
         if i % 500 == 0:
             trajectories, _, _, _ = sample_trajectories(
-                env, model, args.n_evaluation_trajectories
+                env, sac_agent.policy, args.n_evaluation_trajectories
             )
             last_states = get_last_states(env, trajectories)
             kde, fig4 = fit_kde(last_states, plot=True)
@@ -282,7 +249,7 @@ for i in trange(n_iterations):
                 colors = plt.cm.rainbow(np.linspace(0, 1, 10))
                 fig1 = plot_samples(last_states[:2000].detach().cpu().numpy())
                 fig2 = plot_trajectories(trajectories.detach().cpu().numpy()[:20])
-                fig3 = plot_termination_probabilities(model)
+                fig3 = plot_termination_probabilities(sac_agent.policy)
 
                 log_dict["last_states"] = wandb.Image(fig1)
                 log_dict["trajectories"] = wandb.Image(fig2)
@@ -293,11 +260,9 @@ for i in trange(n_iterations):
             wandb.log(log_dict, step=i)
 
         tqdm.write(
-            # Loss with 3 digits of precision, logZ with 2 digits of precision, true logZ with 2 digits of precision
-            # Last computed JSD with 4 digits of precision
-            f"States: {(i + 1) * BS}, Loss: {loss.item():.3f}, logZ: {logZ.item():.2f}, true logZ: {np.log(env.Z):.2f}, JSD: {jsd:.4f}"
+            # SAC losses and JSD
+            f"States: {(i + 1) * BS}, Critic: {qf1_loss:.3f}/{qf2_loss:.3f}, Policy: {policy_loss:.3f}, Alpha: {alpha:.3f}, JSD: {jsd:.4f}, Replay: {len(memory)}"
         )
-
 
 if USE_WANDB:
     wandb.finish()
@@ -306,8 +271,9 @@ if USE_WANDB:
 save_path = os.path.join("saved_models", run_name)
 if not os.path.exists(save_path):
     os.makedirs(save_path)
-    torch.save(model.state_dict(), os.path.join(save_path, "model.pt"))
+    torch.save(sac_agent.policy.state_dict(), os.path.join(save_path, "model.pt"))
     torch.save(bw_model.state_dict(), os.path.join(save_path, "bw_model.pt"))
-    torch.save(logZ, os.path.join(save_path, "logZ.pt"))
+    torch.save(sac_agent.critic.state_dict(), os.path.join(save_path, "critic.pt"))
+    torch.save(sac_agent.critic_target.state_dict(), os.path.join(save_path, "critic_target.pt"))
     with open(os.path.join(save_path, "args.json"), "w") as f:
         json.dump(vars(args), f)

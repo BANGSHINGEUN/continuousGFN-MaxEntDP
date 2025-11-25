@@ -147,7 +147,7 @@ class CirclePB(NeuralNet):
 
     def to_dist(self, x):
         if self.uniform:
-            return Beta(torch.ones(x.shape[0]), torch.ones(x.shape[0]))
+            return Beta(torch.ones(x.shape[0], device=x.device), torch.ones(x.shape[0], device=x.device))
         mixture_logits, alpha, beta = self.forward(x)
         dist = MixtureSameFamily(
             Categorical(logits=mixture_logits),
