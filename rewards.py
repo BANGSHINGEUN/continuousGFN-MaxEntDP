@@ -297,6 +297,423 @@ def Z_gaussian_mixture(dim, R0, R1, mixture_sigma=0.05, means_2d=None, **kwargs)
     return R0 + total_mixture_contribution
 
 
+def reward_corner_squares(final_states, R0, R1, R2, **kwargs):
+    """
+    Corner squares reward: high reward in corners with nested structure.
+
+    Structure (for 2D):
+    - 3 corners (excluding bottom-left) each have an outer square of size 0.25 × 0.25
+    - Inside each outer square (centered), there's an inner square of size 0.125 × 0.125
+    - Outer square: reward R1 (e.g., 10)
+    - Inner square (centered in outer square): reward R2 (e.g., 100)
+    - Rest: reward 1e-9 (baseline)
+
+    Corner positions:
+    - Bottom-right: (1, 0)
+    - Top-left: (0, 1)
+    - Top-right: (1, 1)
+    """
+    device = final_states.device
+    batch_size = final_states.shape[0]
+    dim = final_states.shape[-1]
+
+    if dim != 2:
+        raise NotImplementedError("corner_squares only implemented for dim=2")
+
+    # Fixed sizes for corner reward regions
+    outer_size = 0.25
+    inner_size = 0.125  # outer_size / 2
+
+    # Initialize with baseline reward (1e-9 instead of 0)
+    reward = torch.full((batch_size,), 1e-9, device=device)
+
+    x = final_states[:, 0]  # x coordinate
+    y = final_states[:, 1]  # y coordinate
+
+    # Define corners and check each one (excluding bottom-left where s0 is)
+    corners = [
+        (1.0, 0.0),  # bottom-right
+        (0.0, 1.0),  # top-left
+        (1.0, 1.0),  # top-right
+    ]
+
+    for cx, cy in corners:
+        # Distance from corner
+        if cx == 0.0:
+            dx = x
+        else:  # cx == 1.0
+            dx = 1.0 - x
+
+        if cy == 0.0:
+            dy = y
+        else:  # cy == 1.0
+            dy = 1.0 - y
+
+        # Check if in outer square (size 0.25 × 0.25 from corner)
+        in_outer = (dx <= outer_size) & (dy <= outer_size)
+
+        # For inner square, check if centered within outer square
+        # Distance from center of outer square
+        dx_from_center = torch.abs(dx - outer_size / 2)  # distance from center of outer square
+        dy_from_center = torch.abs(dy - outer_size / 2)
+
+        # Inner square is centered in the outer square
+        in_inner = (dx_from_center <= inner_size / 2) & (dy_from_center <= inner_size / 2) & in_outer
+
+        # Assign rewards: inner overrides outer
+        reward[in_outer] = R1
+        reward[in_inner] = R2
+
+    return reward
+
+
+def Z_corner_squares(dim, R0, R1, R2, **kwargs):
+    """Partition function for corner_squares reward with fixed corner size of 0.25."""
+    if dim != 2:
+        raise NotImplementedError("corner_squares Z only implemented for dim=2")
+
+    # Fixed corner size
+    corner_size = 0.25
+    inner_size = 0.125
+
+    # Area of each outer square
+    outer_square_area = corner_size * corner_size
+
+    # Area of each inner square
+    inner_square_area = inner_size * inner_size
+
+    # Area with R1 reward (outer square minus inner square) × 3 corners (excluding bottom-left)
+    area_R1 = 3 * (outer_square_area - inner_square_area)
+
+    # Area with R2 reward (inner square) × 3 corners
+    area_R2 = 3 * inner_square_area
+
+    # Rest of the space (unit square minus 3 corner squares)
+    area_R0 = 1.0 - 3 * outer_square_area
+
+    # Use 1e-9 as baseline instead of R0
+    Z = 1e-9 * area_R0 + R1 * area_R1 + R2 * area_R2
+
+    return Z
+
+
+def reward_two_corners(final_states, R0, R1, R2, **kwargs):
+    """
+    Two corners reward: high reward in 2 corners with nested structure.
+
+    Structure (for 2D):
+    - 2 corners (bottom-right and top-left) each have an outer square of size 0.25 × 0.25
+    - Inside each outer square (centered), there's an inner square of size 0.125 × 0.125
+    - Outer square: reward R1 (e.g., 0.5)
+    - Inner square (centered in outer square): reward R2 (e.g., 2.0)
+    - Rest: reward 1e-9 (baseline)
+
+    Corner positions:
+    - Bottom-right: (1, 0)
+    - Top-left: (0, 1)
+    """
+    device = final_states.device
+    batch_size = final_states.shape[0]
+    dim = final_states.shape[-1]
+
+    if dim != 2:
+        raise NotImplementedError("two_corners only implemented for dim=2")
+
+    # Fixed sizes for corner reward regions
+    outer_size = 0.25
+    inner_size = 0.125  # outer_size / 2
+
+    # Initialize with baseline reward (1e-9 instead of 0)
+    reward = torch.full((batch_size,), 1e-9, device=device)
+
+    x = final_states[:, 0]  # x coordinate
+    y = final_states[:, 1]  # y coordinate
+
+    # Define corners (only 2: bottom-right and top-left)
+    corners = [
+        (1.0, 0.0),  # bottom-right
+        (0.0, 1.0),  # top-left
+    ]
+
+    for cx, cy in corners:
+        # Distance from corner
+        if cx == 0.0:
+            dx = x
+        else:  # cx == 1.0
+            dx = 1.0 - x
+
+        if cy == 0.0:
+            dy = y
+        else:  # cy == 1.0
+            dy = 1.0 - y
+
+        # Check if in outer square (size 0.25 × 0.25 from corner)
+        in_outer = (dx <= outer_size) & (dy <= outer_size)
+
+        # For inner square, check if centered within outer square
+        # Distance from center of outer square
+        dx_from_center = torch.abs(dx - outer_size / 2)  # distance from center of outer square
+        dy_from_center = torch.abs(dy - outer_size / 2)
+
+        # Inner square is centered in the outer square
+        in_inner = (dx_from_center <= inner_size / 2) & (dy_from_center <= inner_size / 2) & in_outer
+
+        # Assign rewards: inner overrides outer
+        reward[in_outer] = R1
+        reward[in_inner] = R2
+
+    return reward
+
+
+def Z_two_corners(dim, R0, R1, R2, **kwargs):
+    """Partition function for two_corners reward with fixed corner size of 0.25."""
+    if dim != 2:
+        raise NotImplementedError("two_corners Z only implemented for dim=2")
+
+    # Fixed corner size
+    corner_size = 0.25
+    inner_size = 0.125
+
+    # Area of each outer square
+    outer_square_area = corner_size * corner_size
+
+    # Area of each inner square
+    inner_square_area = inner_size * inner_size
+
+    # Area with R1 reward (outer square minus inner square) × 2 corners
+    area_R1 = 2 * (outer_square_area - inner_square_area)
+
+    # Area with R2 reward (inner square) × 2 corners
+    area_R2 = 2 * inner_square_area
+
+    # Rest of the space (unit square minus 2 corner squares)
+    area_R0 = 1.0 - 2 * outer_square_area
+
+    # Use 1e-9 as baseline instead of R0
+    Z = 1e-9 * area_R0 + R1 * area_R1 + R2 * area_R2
+
+    return Z
+
+
+def reward_edge_boxes(final_states, R0, R1, R2, delta, **kwargs):
+    """
+    Edge boxes reward: high reward at small nested boxes on North and East edges.
+
+    Structure (for 2D):
+    - 2 edge midpoints (North and East) each have nested square boxes
+    - Outer box: 2*delta × 2*delta, reward R1
+    - Inner box: delta × delta (centered in outer box), reward R2
+    - Rest: reward 1e-9 (baseline)
+
+    Edge midpoint positions:
+    - East (Right) edge: (1 - delta, 0.5)
+    - North (Top) edge: (0.5, 1 - delta)
+
+    Note: Outer box center is positioned at distance delta from the boundary,
+    ensuring the outer box (size 2*delta) fits within the [0, 1] × [0, 1] space.
+    """
+    device = final_states.device
+    batch_size = final_states.shape[0]
+    dim = final_states.shape[-1]
+
+    if dim != 2:
+        raise NotImplementedError("edge_boxes only implemented for dim=2")
+
+    # Box sizes
+    outer_size = 2 * delta
+    inner_size = delta
+
+    # Initialize with baseline reward (1e-9 instead of 0)
+    reward = torch.full((batch_size,), 1e-9, device=device)
+
+    x = final_states[:, 0]  # x coordinate
+    y = final_states[:, 1]  # y coordinate
+
+    # Edge box centers - only North and East
+    # Position outer box centers so they are delta away from the boundary
+    edge_centers = [
+        (1.0 - delta, 0.5),  # East (right) edge box center
+        (0.5, 1.0 - delta),  # North (top) edge box center
+    ]
+
+    for cx, cy in edge_centers:
+        # Distance from box center
+        dx = torch.abs(x - cx)
+        dy = torch.abs(y - cy)
+
+        # Check if inside the outer box (2*delta × 2*delta centered at (cx, cy))
+        in_outer = (dx <= outer_size / 2) & (dy <= outer_size / 2)
+
+        # Check if inside the inner box (delta × delta centered at (cx, cy))
+        in_inner = (dx <= inner_size / 2) & (dy <= inner_size / 2)
+
+        # Assign rewards: inner overrides outer
+        reward[in_outer] = R1
+        reward[in_inner] = R2
+
+    return reward
+
+
+def Z_edge_boxes(dim, R0, R1, R2, delta, **kwargs):
+    """Partition function for edge_boxes reward (North and East edges only)."""
+    if dim != 2:
+        raise NotImplementedError("edge_boxes Z only implemented for dim=2")
+
+    # Box sizes
+    outer_size = 2 * delta
+    inner_size = delta
+
+    # Areas
+    outer_area = outer_size * outer_size
+    inner_area = inner_size * inner_size
+
+    # 2 edge boxes (North and East), they don't overlap
+    # Area with R1 reward (outer box minus inner box) × 2 boxes
+    area_R1 = 2 * (outer_area - inner_area)
+
+    # Area with R2 reward (inner box) × 2 boxes
+    area_R2 = 2 * inner_area
+
+    # Rest of the space (unit square minus 2 outer boxes)
+    area_R0 = 1.0 - 2 * outer_area
+
+    # Use 1e-9 as baseline, R1 for outer, R2 for inner
+    Z = 1e-9 * area_R0 + R1 * area_R1 + R2 * area_R2
+
+    return Z
+
+
+def reward_edge_boxes_corner_squares(final_states, R0, R1, R2, delta, **kwargs):
+    """
+    Combined reward: edge boxes (North and East) + corner squares.
+
+    Structure (for 2D):
+    - 2 edge midpoints (North and East) each have nested square boxes:
+      - Outer box: 2*delta × 2*delta, reward R1
+      - Inner box: delta × delta (centered in outer box), reward R2
+    - 3 corners (bottom-right, top-left, top-right) each have nested squares:
+      - Outer square: 0.25 × 0.25, reward R1
+      - Inner square: 0.125 × 0.125 (centered in outer square), reward R2
+    - Rest: reward 1e-9 (baseline)
+
+    Edge box centers:
+    - East (Right) edge: (1 - delta, 0.5)
+    - North (Top) edge: (0.5, 1 - delta)
+
+    Corner positions:
+    - Bottom-right: (1, 0)
+    - Top-left: (0, 1)
+    - Top-right: (1, 1)
+    """
+    device = final_states.device
+    batch_size = final_states.shape[0]
+    dim = final_states.shape[-1]
+
+    if dim != 2:
+        raise NotImplementedError("edge_boxes_corner_squares only implemented for dim=2")
+
+    # Initialize with baseline reward (1e-9 instead of 0)
+    reward = torch.full((batch_size,), 1e-9, device=device)
+
+    x = final_states[:, 0]  # x coordinate
+    y = final_states[:, 1]  # y coordinate
+
+    # ----- Edge boxes (North and East) -----
+    edge_outer_size = 2 * delta
+    edge_inner_size = delta
+
+    edge_centers = [
+        (1.0 - delta, 0.5),  # East (right) edge box center
+        (0.5, 1.0 - delta),  # North (top) edge box center
+    ]
+
+    for cx, cy in edge_centers:
+        dx = torch.abs(x - cx)
+        dy = torch.abs(y - cy)
+
+        in_outer = (dx <= edge_outer_size / 2) & (dy <= edge_outer_size / 2)
+        in_inner = (dx <= edge_inner_size / 2) & (dy <= edge_inner_size / 2)
+
+        reward[in_outer] = R1
+        reward[in_inner] = R2
+
+    # ----- Corner squares (3 corners) -----
+    corner_outer_size = 0.25
+    corner_inner_size = 0.125
+
+    corners = [
+        (1.0, 0.0),  # bottom-right
+        (0.0, 1.0),  # top-left
+        (1.0, 1.0),  # top-right
+    ]
+
+    for cx, cy in corners:
+        # Distance from corner
+        if cx == 0.0:
+            dx = x
+        else:  # cx == 1.0
+            dx = 1.0 - x
+
+        if cy == 0.0:
+            dy = y
+        else:  # cy == 1.0
+            dy = 1.0 - y
+
+        # Check if in outer square
+        in_outer = (dx <= corner_outer_size) & (dy <= corner_outer_size)
+
+        # Distance from center of outer square
+        dx_from_center = torch.abs(dx - corner_outer_size / 2)
+        dy_from_center = torch.abs(dy - corner_outer_size / 2)
+
+        # Inner square is centered in the outer square
+        in_inner = (dx_from_center <= corner_inner_size / 2) & (dy_from_center <= corner_inner_size / 2) & in_outer
+
+        # Assign rewards: inner overrides outer
+        reward[in_outer] = R1
+        reward[in_inner] = R2
+
+    return reward
+
+
+def Z_edge_boxes_corner_squares(dim, R0, R1, R2, delta, **kwargs):
+    """Partition function for combined edge_boxes and corner_squares reward."""
+    if dim != 2:
+        raise NotImplementedError("edge_boxes_corner_squares Z only implemented for dim=2")
+
+    # ----- Edge boxes contribution -----
+    edge_outer_size = 2 * delta
+    edge_inner_size = delta
+    edge_outer_area = edge_outer_size * edge_outer_size
+    edge_inner_area = edge_inner_size * edge_inner_size
+
+    # 2 edge boxes (North and East), they don't overlap
+    edge_area_R1 = 2 * (edge_outer_area - edge_inner_area)
+    edge_area_R2 = 2 * edge_inner_area
+
+    # ----- Corner squares contribution -----
+    corner_outer_size = 0.25
+    corner_inner_size = 0.125
+    corner_outer_area = corner_outer_size * corner_outer_size
+    corner_inner_area = corner_inner_size * corner_inner_size
+
+    # 3 corners (excluding bottom-left)
+    corner_area_R1 = 3 * (corner_outer_area - corner_inner_area)
+    corner_area_R2 = 3 * corner_inner_area
+
+    # ----- Total areas -----
+    total_area_R1 = edge_area_R1 + corner_area_R1
+    total_area_R2 = edge_area_R2 + corner_area_R2
+
+    # Rest of the space (unit square minus all boxes and corners)
+    area_R0 = 1.0 - 2 * edge_outer_area - 3 * corner_outer_area
+
+    # Use 1e-9 as baseline, R1 for outer regions, R2 for inner regions
+    Z = 1e-9 * area_R0 + R1 * total_area_R1 + R2 * total_area_R2
+
+    return Z
+
+
 def reward_debug(final_states, delta, **kwargs):
     """
     Debug reward: uniform inside a ball of radius delta, zero outside.
@@ -324,6 +741,10 @@ REWARD_FUNCTIONS = {
     'multi_ring': reward_multi_ring,
     'curve': reward_curve,
     'gaussian_mixture': reward_gaussian_mixture,
+    'corner_squares': reward_corner_squares,
+    'two_corners': reward_two_corners,
+    'edge_boxes': reward_edge_boxes,
+    'edge_boxes_corner_squares': reward_edge_boxes_corner_squares,
     'debug': reward_debug,
 }
 
@@ -334,6 +755,10 @@ Z_FUNCTIONS = {
     'multi_ring': Z_multi_ring,
     'curve': Z_curve,
     'gaussian_mixture': Z_gaussian_mixture,
+    'corner_squares': Z_corner_squares,
+    'two_corners': Z_two_corners,
+    'edge_boxes': Z_edge_boxes,
+    'edge_boxes_corner_squares': Z_edge_boxes_corner_squares,
     'debug': Z_debug,
 }
 

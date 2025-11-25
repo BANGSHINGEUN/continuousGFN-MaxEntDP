@@ -21,7 +21,6 @@ from utils import (
     plot_samples,
     estimate_jsd,
     plot_trajectories,
-    plot_termination_probabilities,
 )
 
 import config
@@ -39,7 +38,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=str, default=config.DEVICE)
 parser.add_argument("--dim", type=int, default=config.DIM)
 parser.add_argument("--delta", type=float, default=config.DELTA)
-parser.add_argument("--env_epsilon", type=float, default=config.ENV_EPSILON)
 parser.add_argument(
     "--n_components",
     type=int,
@@ -51,10 +49,13 @@ parser.add_argument("--reward_debug", action="store_true", default=config.REWARD
 parser.add_argument(
     "--reward_type",
     type=str,
-    choices=["baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture"],
+    choices=["baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares"],
     default=config.REWARD_TYPE,
     help="Type of reward function to use. To modify reward-specific parameters (radius, sigma, etc.), edit rewards.py"
 )
+parser.add_argument("--R0", type=float, default=config.R0, help="Baseline reward value")
+parser.add_argument("--R1", type=float, default=config.R1, help="Medium reward value (e.g., outer square)")
+parser.add_argument("--R2", type=float, default=config.R2, help="High reward value (e.g., inner square)")
 parser.add_argument(
     "--n_components_s0",
     type=int,
@@ -72,21 +73,6 @@ parser.add_argument(
     type=float,
     default=config.BETA_MAX,
     help="Maximum value for the concentration parameters of the Beta distribution",
-)
-parser.add_argument(
-    "--loss", type=str, choices=["tb", "db", "modifieddb", "reinforce_tb"], default=config.LOSS
-)
-parser.add_argument(
-    "--alpha",
-    type=float,
-    default=config.ALPHA,
-    help="Weight of the reward term in DB",
-)
-parser.add_argument(
-    "--alpha_schedule",
-    type=float,
-    default=config.ALPHA_SCHEDULE,
-    help="every 1000 iterations, divide alpha by this value - the maximum value of alpha is 1.0",
 )
 parser.add_argument(
     "--PB",
@@ -132,12 +118,11 @@ n_iterations = args.n_iterations
 BS = args.BS
 n_components = args.n_components
 n_components_s0 = args.n_components_s0
-loss_type = args.loss
 
 if seed == 0:
     seed = np.random.randint(int(1e6))
 
-run_name = f"d{delta}_{args.reward_type}_{loss_type}_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
+run_name = f"d{delta}_{args.reward_type}_tb_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
 run_name += f"_n{n_components}_n0{n_components_s0}"
 run_name += f"_gamma{args.gamma_scheduler}_mile{args.scheduler_milestone}"
 print(run_name)
@@ -152,10 +137,12 @@ print(f"Using device: {device}")
 env = Box(
     dim=dim,
     delta=delta,
-    epsilon=args.env_epsilon,
     device_str=device,
     reward_type=args.reward_type,
     reward_debug=args.reward_debug,
+    R0=args.R0,
+    R1=args.R1,
+    R2=args.R2,
 )
 
 # Get the true KDE
@@ -216,13 +203,7 @@ scheduler = torch.optim.lr_scheduler.MultiStepLR(
 
 jsd = float("inf")
 
-current_alpha = args.alpha * args.alpha_schedule
-
 for i in trange(n_iterations):
-    if i % 1000 == 0:
-        current_alpha = max(current_alpha / args.alpha_schedule, 1.0)
-        print(f"current optimizer LR: {optimizer.param_groups[0]['lr']}")
-
     optimizer.zero_grad()
     trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
         env,
@@ -235,10 +216,9 @@ for i in trange(n_iterations):
         env, bw_model, trajectories
     )
 
-    if loss_type == "tb":
-        loss = torch.mean((logZ + logprobs - bw_logprobs - logrewards) ** 2)
-    else:
-        raise ValueError("Unknown loss type")
+    # TB (Trajectory Balance) loss
+    loss = torch.mean((logZ + logprobs - bw_logprobs - logrewards) ** 2)
+
     if torch.isinf(loss):
         raise ValueError("Infinite loss")
     loss.backward()
@@ -282,11 +262,9 @@ for i in trange(n_iterations):
                 colors = plt.cm.rainbow(np.linspace(0, 1, 10))
                 fig1 = plot_samples(last_states[:2000].detach().cpu().numpy())
                 fig2 = plot_trajectories(trajectories.detach().cpu().numpy()[:20])
-                fig3 = plot_termination_probabilities(model)
 
                 log_dict["last_states"] = wandb.Image(fig1)
                 log_dict["trajectories"] = wandb.Image(fig2)
-                log_dict["termination_probs"] = wandb.Image(fig3)
                 log_dict["kde"] = wandb.Image(fig4)
 
         if USE_WANDB:

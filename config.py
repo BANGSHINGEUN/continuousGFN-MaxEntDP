@@ -9,25 +9,24 @@ DEVICE = "cuda:0"  # Options: "cuda:0", "cuda:1", "cpu", etc.
 # Environment parameters
 DIM = 2
 DELTA = 0.25
-ENV_EPSILON = 1e-10
 REWARD_DEBUG = False
 
 # Reward configuration
 # To change reward-specific parameters (radius, sigma, etc.), edit rewards.py directly
-REWARD_TYPE = "baseline"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture"
+REWARD_TYPE = "edge_boxes_corner_squares"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares"
+R0 = 0.1  # Baseline reward
+R1 = 0.5   # Medium reward (e.g., outer square in corner_squares)
+R2 = 1.0   # High reward (e.g., inner square in corner_squares)
 
 # Model parameters
 N_COMPONENTS = 1  # Number of components in Mixture Of Betas
 N_COMPONENTS_S0 = 1  # Number of components in Mixture Of Betas for s0
 BETA_MIN = 0.1  # Minimum value for the concentration parameters of the Beta distribution
-BETA_MAX = 5.0  # Maximum value for the concentration parameters of the Beta distribution
+BETA_MAX = 2.0  # Maximum value for the concentration parameters of the Beta distribution
 HIDDEN_DIM = 128
 N_HIDDEN = 3
 
 # Training parameters
-LOSS = "tb"  # Options: "tb", "db", "modifieddb", "reinforce_tb"
-ALPHA = 1.0  # Weight of the reward term in DB
-ALPHA_SCHEDULE = 1.0  # Every 1000 iterations, divide alpha by this value
 PB = "learnable"  # Options: "learnable", "tied", "uniform"
 GAMMA_SCHEDULER = 0.5
 SCHEDULER_MILESTONE = 2500

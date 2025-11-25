@@ -40,7 +40,7 @@ class CirclePF(NeuralNet):
         beta_min=0.1,
         beta_max=2.0,
     ):
-        output_dim = 1 + 3 * n_components
+        output_dim = 3 * n_components  # Removed exit proba (was: 1 + 3 * n_components)
         super().__init__(
             dim=2, hidden_dim=hidden_dim, n_hidden=n_hidden, output_dim=output_dim
         )
@@ -63,14 +63,11 @@ class CirclePF(NeuralNet):
 
     def forward(self, x):
         out = super().forward(x)
-        pre_sigmoid_exit = out[..., 0]
-        mixture_logits = out[..., 1 : 1 + self.n_components]
-        log_alpha = out[..., 1 + self.n_components : 1 + 2 * self.n_components]
-        log_beta = out[..., 1 + 2 * self.n_components : 1 + 3 * self.n_components]
+        mixture_logits = out[..., 0 : self.n_components]
+        log_alpha = out[..., self.n_components : 2 * self.n_components]
+        log_beta = out[..., 2 * self.n_components : 3 * self.n_components]
 
-        exit_proba = torch.sigmoid(pre_sigmoid_exit)
         return (
-            exit_proba,
             mixture_logits,
             self.beta_max * torch.sigmoid(log_alpha) + self.beta_min,
             self.beta_max * torch.sigmoid(log_beta) + self.beta_min,
@@ -102,13 +99,13 @@ class CirclePF(NeuralNet):
             return dist_r, dist_theta
 
         # Otherwise, we use the neural network
-        exit_proba, mixture_logits, alpha, beta = self.forward(x)
+        mixture_logits, alpha, beta = self.forward(x)
         dist = MixtureSameFamily(
             Categorical(logits=mixture_logits),
             Beta(alpha, beta),
         )
 
-        return exit_proba, dist
+        return dist
 
 
 class CirclePB(NeuralNet):

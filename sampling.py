@@ -1,5 +1,4 @@
 import torch
-from torch.distributions import Distribution, Beta
 import numpy as np
 
 
@@ -7,7 +6,7 @@ def sample_actions(env, model, states):
     # states is a tensor of shape (n, dim)
     batch_size = states.shape[0]
     out = model.to_dist(states)
-    if isinstance(out[0], Distribution):  # s0 input
+    if isinstance(out, tuple):  # s0 input returns (dist_r, dist_theta)
         dist_r, dist_theta = out
         samples_r = dist_r.sample(torch.Size((batch_size,)))
         samples_theta = dist_theta.sample(torch.Size((batch_size,)))
@@ -30,11 +29,12 @@ def sample_actions(env, model, states):
             - np.log(env.delta)  # why ?
         )
     else:
-        exit_proba, dist = out
+        dist = out
 
-        exit = torch.bernoulli(exit_proba).bool()
-        exit[torch.norm(1 - states, dim=1) <= env.delta] = True
-        exit[torch.any(states >= 1 - env.epsilon, dim=-1)] = True
+        # Automatic termination: check if min_i(1 - state_i) <= env.delta
+        # This means at least one dimension is within delta of the boundary
+        should_terminate = torch.any(states >= 1 - env.delta, dim=-1)
+
         A = torch.where(
             states[:, 0] <= 1 - env.delta,
             0.0,
@@ -46,8 +46,7 @@ def sample_actions(env, model, states):
             2.0 / torch.pi * torch.arcsin((1 - states[:, 1]) / env.delta),
         )
         assert torch.all(
-            B[~torch.any(states >= 1 - env.delta, dim=-1)]
-            >= A[~torch.any(states >= 1 - env.delta, dim=-1)]
+            B[~should_terminate] >= A[~should_terminate]
         )
         samples = dist.sample()
 
@@ -59,16 +58,14 @@ def sample_actions(env, model, states):
 
         logprobs = (
             dist.log_prob(samples)
-            + torch.log(1 - exit_proba)
             - np.log(env.delta)
             - np.log(np.pi / 2)
             - torch.log(B - A)
         )
 
-        actions[exit] = -float("inf")
-        logprobs[exit] = torch.log(exit_proba[exit])
-        logprobs[torch.norm(1 - states, dim=1) <= env.delta] = 0.0
-        logprobs[torch.any(states >= 1 - env.epsilon, dim=-1)] = 0.0
+        # Set terminal actions and zero logprobs for terminated states
+        actions[should_terminate] = -float("inf")
+        logprobs[should_terminate] = 0.0
 
     return actions, logprobs
 
