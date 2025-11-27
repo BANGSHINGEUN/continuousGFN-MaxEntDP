@@ -8,8 +8,8 @@ from tqdm import tqdm, trange
 import argparse
 
 from env import Box, get_last_states
-from model import CirclePF, CirclePB, NeuralNet
-from sampling import (
+from sac_model import CirclePB, Uniform
+from sac_sampling import (
     sample_trajectories,
     evaluate_backward_logprobs,
 )
@@ -26,7 +26,8 @@ from utils import (
     plot_termination_probabilities,
 )
 
-import sac_config as config
+import config
+import sac_config
 
 try:
     import wandb
@@ -38,17 +39,12 @@ USE_WANDB = True
 NO_PLOT = False
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--device", type=str, default=config.DEVICE)
+parser.add_argument("--device", type=str, default=sac_config.DEVICE)
 parser.add_argument("--dim", type=int, default=config.DIM)
 parser.add_argument("--delta", type=float, default=config.DELTA)
-parser.add_argument("--env_epsilon", type=float, default=config.ENV_EPSILON)
-parser.add_argument(
-    "--n_components",
-    type=int,
-    default=config.N_COMPONENTS,
-    help="Number of components in Mixture Of Betas",
-)
-
+parser.add_argument("--R0", type=float, default=config.R0, help="Baseline reward value")
+parser.add_argument("--R1", type=float, default=config.R1, help="Medium reward value (e.g., outer square)")
+parser.add_argument("--R2", type=float, default=config.R2, help="High reward value (e.g., inner square)")
 parser.add_argument("--reward_debug", action="store_true", default=config.REWARD_DEBUG)
 parser.add_argument(
     "--reward_type",
@@ -58,12 +54,6 @@ parser.add_argument(
     help="Type of reward function to use. To modify reward-specific parameters (radius, sigma, etc.), edit rewards.py"
 )
 parser.add_argument(
-    "--n_components_s0",
-    type=int,
-    default=config.N_COMPONENTS_S0,
-    help="Number of components in Mixture Of Betas",
-)
-parser.add_argument(
     "--beta_min",
     type=float,
     default=config.BETA_MIN,
@@ -71,7 +61,7 @@ parser.add_argument(
 )
 parser.add_argument(
     "--beta_max",
-    type=float,
+    type=float, 
     default=config.BETA_MAX,
     help="Maximum value for the concentration parameters of the Beta distribution",
 )
@@ -96,15 +86,13 @@ parser.add_argument("--no_wandb", action="store_true", default=config.NO_WANDB)
 parser.add_argument("--wandb_project", type=str, default=config.WANDB_PROJECT)
 
 # SAC-specific arguments
-parser.add_argument("--policy", type=str, default="Gaussian", help="Policy type")
-parser.add_argument("--tau", type=float, default=config.TAU, help="Target smoothing coefficient")
-parser.add_argument("--sac_alpha", type=float, default=config.SAC_ALPHA, help="SAC temperature parameter")
-parser.add_argument("--automatic_entropy_tuning", action="store_true", default=config.AUTOMATIC_ENTROPY_TUNING, help="Automatically adjust alpha")
-parser.add_argument("--target_update_interval", type=int, default=config.TARGET_UPDATE_INTERVAL, help="Target network update interval")
-parser.add_argument("--Critic_hidden_size", type=int, default=config.CRITIC_HIDDEN_SIZE, help="Hidden size for SAC critic networks")
-parser.add_argument("--replay_size", type=int, default=config.REPLAY_SIZE, help="Replay buffer size")
-parser.add_argument("--sac_batch_size", type=int, default=config.SAC_BATCH_SIZE, help="SAC batch size")
-parser.add_argument("--updates_per_step", type=int, default=config.UPDATES_PER_STEP, help="SAC updates per step")
+parser.add_argument("--tau", type=float, default=sac_config.TAU, help="Tau for soft update")
+parser.add_argument("--uniform_ratio", type=float, default=0.1, help="Ratio of uniform policy")
+parser.add_argument("--target_update_interval", type=int, default=sac_config.TARGET_UPDATE_INTERVAL, help="Target network update interval")
+parser.add_argument("--Critic_hidden_size", type=int, default=sac_config.CRITIC_HIDDEN_SIZE, help="Hidden size for SAC critic networks")
+parser.add_argument("--replay_size", type=int, default=sac_config.REPLAY_SIZE, help="Replay buffer size")
+parser.add_argument("--sac_batch_size", type=int, default=sac_config.SAC_BATCH_SIZE, help="SAC batch size")
+parser.add_argument("--updates_per_step", type=int, default=sac_config.UPDATES_PER_STEP, help="SAC updates per step")
 
 args = parser.parse_args()
 
@@ -125,16 +113,13 @@ seed = args.seed
 lr = args.lr
 n_iterations = args.n_iterations
 BS = args.BS
-n_components = args.n_components
-n_components_s0 = args.n_components_s0
 
 if seed == 0:
     seed = np.random.randint(int(1e6))
 
 run_name = f"SAC_d{delta}_{args.reward_type}_PB{args.PB}_lr{lr}_sd{seed}"
-run_name += f"_n{n_components}_n0{n_components_s0}"
 run_name += f"_gamma{args.gamma_scheduler}_mile{args.scheduler_milestone}"
-run_name += f"_sac_alpha{args.sac_alpha}_batch{args.sac_batch_size}"
+run_name += f"_batch{args.sac_batch_size}"
 print(run_name)
 if USE_WANDB:
     wandb.run.name = run_name  # type: ignore
@@ -147,10 +132,12 @@ print(f"Using device: {device}")
 env = Box(
     dim=dim,
     delta=delta,
-    epsilon=args.env_epsilon,
     device_str=device,
     reward_type=args.reward_type,
     reward_debug=args.reward_debug,
+    R0=args.R0,
+    R1=args.R1,
+    R2=args.R2,
 )
 
 # Get the true KDE
@@ -171,6 +158,7 @@ if USE_WANDB:
 
 # Create SAC agent (includes CirclePF as policy)
 sac_agent = SAC(args, env)
+Uniform_model = Uniform()
 
 # Create replay memory
 memory = ReplayMemory(args.replay_size, seed, device=device)
@@ -180,7 +168,6 @@ bw_model = CirclePB(
     n_hidden=args.n_hidden,
     torso=sac_agent.policy.torso if args.PB == "tied" else None,
     uniform=args.PB == "uniform",
-    n_components=n_components,
     beta_min=args.beta_min,
     beta_max=args.beta_max,
 ).to(device)
@@ -190,11 +177,20 @@ sac_updates = 0  # Track SAC update steps
 
 for i in trange(1, n_iterations + 1):
 
-    trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
-        env,
-        sac_agent.policy,
-        BS,
-    )
+
+    if i < n_iterations*args.uniform_ratio:
+        trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
+            env,
+            Uniform_model,
+            BS,
+        )
+
+    else:
+        trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
+            env,
+            sac_agent.policy,
+            BS,
+        )
     last_states = get_last_states(env, trajectories)
     logrewards = env.reward(last_states).log()
     bw_logprobs, all_bw_logprobs = evaluate_backward_logprobs(
@@ -203,13 +199,13 @@ for i in trange(1, n_iterations + 1):
 
     # Convert trajectories to transitions and push to replay memory
     all_states, all_actions, all_rewards, all_next_states, all_dones = trajectories_to_transitions(
-        trajectories, actionss, all_bw_logprobs, last_states, logrewards, env
+        trajectories, actionss, all_bw_logprobs, logrewards, env
     )
     memory.push_batch(all_states, all_actions, all_rewards, all_next_states, all_dones)
 
     if len(memory) > args.sac_batch_size:
         for _ in range(args.updates_per_step):
-            qf1_loss, qf2_loss, policy_loss, alpha_loss, alpha = sac_agent.update_parameters(memory, args.sac_batch_size, sac_updates)
+            qf1_loss, qf2_loss, policy_loss = sac_agent.update_parameters(memory, args.sac_batch_size, sac_updates)
             sac_updates += 1
         # Step the scheduler once per iteration (not per update)
         sac_agent.policy_scheduler.step()
@@ -227,8 +223,6 @@ for i in trange(1, n_iterations + 1):
             "sac/critic_1_loss": qf1_loss,
             "sac/critic_2_loss": qf2_loss,
             "sac/policy_loss": policy_loss,
-            "sac/alpha_loss": alpha_loss,
-            "sac/alpha": alpha,
             "sac/updates": sac_updates,
             "sac/replay_size": len(memory),
             "states_visited": i * BS,
@@ -253,7 +247,6 @@ for i in trange(1, n_iterations + 1):
 
                 log_dict["last_states"] = wandb.Image(fig1)
                 log_dict["trajectories"] = wandb.Image(fig2)
-                log_dict["termination_probs"] = wandb.Image(fig3)
                 log_dict["kde"] = wandb.Image(fig4)
 
         if USE_WANDB:
@@ -261,7 +254,7 @@ for i in trange(1, n_iterations + 1):
 
         tqdm.write(
             # SAC losses and JSD
-            f"States: {(i + 1) * BS}, Critic: {qf1_loss:.3f}/{qf2_loss:.3f}, Policy: {policy_loss:.3f}, Alpha: {alpha:.3f}, JSD: {jsd:.4f}, Replay: {len(memory)}"
+            f"States: {(i + 1) * BS}, Critic: {qf1_loss:.3f}/{qf2_loss:.3f}, Policy: {policy_loss:.3f}, JSD: {jsd:.4f}, Replay: {len(memory)}"
         )
 
 if USE_WANDB:

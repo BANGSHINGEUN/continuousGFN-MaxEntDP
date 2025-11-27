@@ -5,7 +5,7 @@ import os
 import pickle
 
 
-def trajectories_to_transitions(trajectories, actionss, all_bw_logprobs, last_states, logrewards, env):
+def trajectories_to_transitions(trajectories, actionss, all_bw_logprobs, logrewards, env):
     """
     Convert trajectories to transitions for replay buffer.
 
@@ -20,60 +20,34 @@ def trajectories_to_transitions(trajectories, actionss, all_bw_logprobs, last_st
     Returns:
         Tuple of (states, actions, rewards, next_states, dones) as tensors
     """
-    batch_size = trajectories.shape[0]
-    traj_length = trajectories.shape[1]
-    device = trajectories.device
-
-    # all_bw_logprobs length can be shorter than trajectories due to how evaluate_backward_logprobs works
-    # It computes backward probs for range(traj_length-2, 1, -1) and appends one zero
-    bw_length = all_bw_logprobs.shape[1]
 
     # Extract states and next_states for intermediate transitions
     # Match the length to all_bw_logprobs
-    states = trajectories[:, :bw_length, :]  # (batch_size, bw_length, dim)
-    next_states = trajectories[:, 1:bw_length+1, :]  # (batch_size, bw_length, dim)
-    actions = actionss[:, :bw_length, :]  # (batch_size, bw_length, dim)
-    rewards = all_bw_logprobs  # (batch_size, bw_length)
 
-    # Check which states are sink states
-    is_sink = torch.all(states == env.sink_state, dim=-1)  # (batch_size, bw_length)
-    is_next_sink = torch.all(next_states == env.sink_state, dim=-1)  # (batch_size, bw_length)
-
+    states = trajectories[:, :-1, :]  
+    next_states = trajectories[:, 1:, :] 
+    is_not_sink = torch.all(states != env.sink_state, dim=-1)
+    is_next_sink = torch.all(next_states == env.sink_state, dim=-1)
+    last_state = is_not_sink & is_next_sink
+    dones = torch.zeros_like(last_state, dtype=torch.float32)  # (batch_size, bw_length)
+    dones[last_state] = 1.0
+    dones = dones[:, 1:]
+    rewards = all_bw_logprobs
+    rewards = torch.where(last_state[:,1:], rewards + logrewards.unsqueeze(1), rewards)
+    states = states[:, :-1, :]  
+    next_states = next_states[:, :-1, :] 
+    actions = actionss[:, :-1, :] 
     # Check which rewards are valid (not inf/nan)
-    is_valid_reward = torch.isfinite(rewards)  # (batch_size, bw_length)
+    is_valid = torch.isfinite(rewards)  # (batch_size, bw_length)
 
-    # Create mask: valid transitions are where current state is not sink AND reward is finite
-    valid_mask = ~is_sink & is_valid_reward  # (batch_size, bw_length)
+    # Flatten batch and time dimensions for transitions
+    states_flat = states[is_valid]
+    actions_flat = actions[is_valid]
+    rewards_flat = rewards[is_valid]
+    next_states_flat = next_states[is_valid]
+    dones_flat = dones[is_valid]
 
-    # Done flag: 1 if next_state is sink, 0 otherwise (but not done for intermediate transitions)
-    dones = torch.zeros_like(is_next_sink, dtype=torch.float32)  # (batch_size, bw_length)
-
-    # Flatten batch and time dimensions for intermediate transitions
-    states_flat = states[valid_mask]  # (num_valid, dim)
-    next_states_flat = next_states[valid_mask]  # (num_valid, dim)
-    actions_flat = actions[valid_mask]  # (num_valid, dim)
-    rewards_flat = rewards[valid_mask]  # (num_valid,)
-    dones_flat = dones[valid_mask]  # (num_valid,)
-
-    # Add terminal transitions: last_states -> sink_state with logrewards as reward
-    # Find the last non-sink state for each trajectory
-    last_non_sink_mask = ~torch.all(last_states == env.sink_state, dim=-1)  # (batch_size,)
-
-    terminal_states = last_states[last_non_sink_mask]  # (num_terminal, dim)
-    terminal_next_states = env.sink_state.unsqueeze(0).expand(terminal_states.shape[0], -1)  # (num_terminal, dim)
-    # For terminal action, use the last action in the trajectory (or zero if it's -inf)
-    terminal_actions = actionss[:, -1, :][last_non_sink_mask]  # (num_terminal, dim)
-    terminal_rewards = logrewards[last_non_sink_mask]  # (num_terminal,)
-    terminal_dones = torch.ones(terminal_states.shape[0], dtype=torch.float32, device=device)  # (num_terminal,)
-
-    # Concatenate intermediate and terminal transitions
-    all_states = torch.cat([states_flat, terminal_states], dim=0)
-    all_next_states = torch.cat([next_states_flat, terminal_next_states], dim=0)
-    all_actions = torch.cat([actions_flat, terminal_actions], dim=0)
-    all_rewards = torch.cat([rewards_flat, terminal_rewards], dim=0)
-    all_dones = torch.cat([dones_flat, terminal_dones], dim=0)
-
-    return all_states, all_actions, all_rewards, all_next_states, all_dones
+    return states_flat, actions_flat, rewards_flat, next_states_flat, dones_flat
 
 
 class ReplayMemory:

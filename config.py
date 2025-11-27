@@ -13,10 +13,10 @@ REWARD_DEBUG = False
 
 # Reward configuration
 # To change reward-specific parameters (radius, sigma, etc.), edit rewards.py directly
-REWARD_TYPE = "edge_boxes_corner_squares"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares"
-R0 = 0.1  # Baseline reward
+REWARD_TYPE = "edge_boxes_corner_squares"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares", "debug"
+R0 = 1e-10  # Baseline reward
 R1 = 0.5   # Medium reward (e.g., outer square in corner_squares)
-R2 = 1.0   # High reward (e.g., inner square in corner_squares)
+R2 = 1e+10  # High reward (e.g., inner square in corner_squares)
 
 # Model parameters
 N_COMPONENTS = 1  # Number of components in Mixture Of Betas
@@ -27,7 +27,7 @@ HIDDEN_DIM = 128
 N_HIDDEN = 3
 
 # Training parameters
-PB = "learnable"  # Options: "learnable", "tied", "uniform"
+PB = "uniform"  # Options: "learnable", "tied", "uniform"
 GAMMA_SCHEDULER = 0.5
 SCHEDULER_MILESTONE = 2500
 SEED = 0

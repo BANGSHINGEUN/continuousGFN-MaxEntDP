@@ -243,7 +243,7 @@ for i in trange(n_iterations):
     if i % 100 == 0:
         log_dict = {
             "loss": loss.item(),
-            "logZdiff": np.log(env.Z) - logZ.item(),
+            "sqrt(logZdiff**2)": np.sqrt((np.log(env.Z) - logZ.item())**2),
             "states_visited": (i + 1) * BS,
         }
 

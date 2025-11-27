@@ -4,45 +4,29 @@ import torch.nn.functional as F
 from torch.optim import Adam
 from sac_utils import soft_update, hard_update
 from sac_model import QNetwork
-from model import CirclePF
-from sampling import sample_actions
+from sac_model import CirclePF
+from sac_sampling import sample_actions
 
 
 class SAC(object):
     def __init__(self, args, env):
 
         self.gamma = 1.0  # Fixed to 1.0 for GFlowNet
-        self.tau = args.tau
-        self.alpha = args.sac_alpha
-
         self.target_update_interval = args.target_update_interval
-        self.automatic_entropy_tuning = args.automatic_entropy_tuning
-
         self.device = env.device
+        self.tau = args.tau
         self.env = env  # Store env for sample_actions
-
         self.critic = QNetwork(env.dim, env.dim, args.Critic_hidden_size).to(device=self.device)
         self.critic_optim = Adam(self.critic.parameters(), lr=args.lr)
-
         self.critic_target = QNetwork(env.dim, env.dim, args.Critic_hidden_size).to(self.device)
         hard_update(self.critic_target, self.critic)
-
-        if self.automatic_entropy_tuning is True:
-            self.target_entropy = -env.dim
-            self.log_alpha = torch.zeros(1, requires_grad=True, device=self.device)
-            self.alpha_optim = Adam([self.log_alpha], lr=args.lr)
-
         self.policy = CirclePF(
             hidden_dim=args.hidden_dim,
             n_hidden=args.n_hidden,
-            n_components=args.n_components,
-            n_components_s0=args.n_components_s0,
             beta_min=args.beta_min,
             beta_max=args.beta_max,
         ).to(self.device)
-
         self.policy_optim = Adam(self.policy.parameters(), lr=args.lr)
-
         # Add scheduler for policy optimizer
         self.policy_scheduler = torch.optim.lr_scheduler.MultiStepLR(
             self.policy_optim,
@@ -50,10 +34,16 @@ class SAC(object):
             gamma=args.gamma_scheduler,
         )
 
-
     def update_parameters(self, memory, batch_size, updates):
-        # Sample a batch from memory (now returns tensors directly)
-        state_batch, action_batch, reward_batch, next_state_batch, mask_batch = memory.sample(batch_size=batch_size)
+        # Sample a batch from memory
+        state_batch, action_batch, reward_batch, next_state_batch, done_batch = memory.sample(batch_size=batch_size)
+
+        # ★ 여기에서 그래프를 확실히 끊어주기
+        state_batch      = state_batch.detach().to(self.device)
+        action_batch     = action_batch.detach().to(self.device)
+        reward_batch     = reward_batch.detach().to(self.device)
+        next_state_batch = next_state_batch.detach().to(self.device)
+        done_batch       = done_batch.detach().to(self.device)
 
         with torch.no_grad():
             # Problem 1: Handle sink states in next_state_batch
@@ -69,8 +59,8 @@ class SAC(object):
                 sampled_actions, sampled_log_pi = sample_actions(
                     self.env, self.policy, next_state_batch[non_sink_mask]
                 )
-                # Replace -inf terminal actions with zeros (won't be used anyway due to mask_batch)
-                sampled_actions = torch.where(
+                # Replace -inf terminal actions with zeros (won't be used anyway due to done_batch)
+                sampled_actions = torch.where(  
                     torch.isinf(sampled_actions),
                     torch.zeros_like(sampled_actions),
                     sampled_actions
@@ -78,7 +68,7 @@ class SAC(object):
                 next_state_action[non_sink_mask] = sampled_actions
                 next_state_log_pi[non_sink_mask] = sampled_log_pi
 
-            # Replace sink states with zeros for critic input (won't be used due to mask_batch)
+            # Replace sink states with zeros for critic input (won't be used due to done_batch)
             next_state_batch_clean = torch.where(
                 torch.isinf(next_state_batch),
                 torch.zeros_like(next_state_batch),
@@ -86,12 +76,12 @@ class SAC(object):
             )
 
             qf1_next_target, qf2_next_target = self.critic_target(next_state_batch_clean, next_state_action)
-            min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - self.alpha * next_state_log_pi.unsqueeze(-1)
-            # FIXED: mask_batch is "done" (1=done, 0=not done)
+            min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - next_state_log_pi.unsqueeze(-1)
+            # FIXED: done_batch is "done" (1=done, 0=not done)
             # Correct SAC Bellman: Q(s,a) = r + (1-done) * γ * Q(s',a')
             # Intermediate (done=0): Q = r + 1*γ*Q' = r + γ*Q' ✓
             # Terminal (done=1): Q = r + 0*γ*Q' = r ✓
-            next_q_value = reward_batch + (1 - mask_batch) * self.gamma * (min_qf_next_target)
+            next_q_value = reward_batch + (1 - done_batch) * (min_qf_next_target)
 
         qf1, qf2 = self.critic(state_batch, action_batch)  # Two Q-functions to mitigate positive bias in the policy improvement step
         qf1_loss = F.mse_loss(qf1, next_q_value)  # JQ = 𝔼(st,at)~D[0.5(Q1(st,at) - r(st,at) - γ(𝔼st+1~p[V(st+1)]))^2]
@@ -100,70 +90,33 @@ class SAC(object):
 
         self.critic_optim.zero_grad()
         qf_loss.backward()
-        # Gradient clipping for critic
-        for p in self.critic.parameters():
-            if p.grad is not None:
-                p.grad.data.clamp_(-10, 10).nan_to_num_(0.0)
         self.critic_optim.step()
 
-        # Problem 2: Separate s_0 and non-s_0 states for policy loss computation
-        # Identify s_0 states (all zeros) and non-s_0 states
         s0_mask = torch.all(state_batch == 0, dim=-1)
         non_s0_mask = ~s0_mask
-
-        # Initialize tensors to collect results
-        pi = torch.zeros_like(state_batch)
-        log_pi = torch.zeros(state_batch.shape[0], device=self.device)
-
-        # Sample actions separately for s_0 and non-s_0 states
         if s0_mask.any():
             pi_s0, log_pi_s0 = sample_actions(self.env, self.policy, state_batch[s0_mask])
-            # Replace -inf terminal actions with zeros
-            pi_s0 = torch.where(torch.isinf(pi_s0), torch.zeros_like(pi_s0), pi_s0)
-            pi[s0_mask] = pi_s0
-            log_pi[s0_mask] = log_pi_s0
 
         if non_s0_mask.any():
             pi_non_s0, log_pi_non_s0 = sample_actions(self.env, self.policy, state_batch[non_s0_mask])
-            # Replace -inf terminal actions with zeros
-            pi_non_s0 = torch.where(torch.isinf(pi_non_s0), torch.zeros_like(pi_non_s0), pi_non_s0)
-            pi[non_s0_mask] = pi_non_s0
-            log_pi[non_s0_mask] = log_pi_non_s0
+            
+        pi = torch.cat([pi_s0, pi_non_s0], dim=0)
+        log_pi = torch.cat([log_pi_s0, log_pi_non_s0], dim=0)
 
-        # Compute Q-values for all sampled actions
         qf1_pi, qf2_pi = self.critic(state_batch, pi)
         min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
-        # Compute combined policy loss
-        policy_loss = ((self.alpha * log_pi.unsqueeze(-1)) - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
+        policy_loss = (log_pi - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
 
         self.policy_optim.zero_grad()
         policy_loss.backward()
-        # Gradient clipping for policy
-        for p in self.policy.parameters():
-            if p.grad is not None:
-                p.grad.data.clamp_(-10, 10).nan_to_num_(0.0)
         self.policy_optim.step()
-
-        if self.automatic_entropy_tuning:
-            alpha_loss = -(self.log_alpha * (log_pi.unsqueeze(-1) + self.target_entropy).detach()).mean()
-
-            self.alpha_optim.zero_grad()
-            alpha_loss.backward()
-            self.alpha_optim.step()
-
-            self.alpha = self.log_alpha.exp()
-            alpha_tlogs = self.alpha.clone() # For TensorboardX logs
-        else:
-            alpha_loss = torch.tensor(0.).to(self.device)
-            alpha_tlogs = torch.tensor(self.alpha) # For TensorboardX logs
-
 
         if updates % self.target_update_interval == 0:
             soft_update(self.critic_target, self.critic, self.tau)
 
-        return qf1_loss.item(), qf2_loss.item(), policy_loss.item(), alpha_loss.item(), alpha_tlogs.item()
-
+        return qf1_loss.item(), qf2_loss.item(), policy_loss.item()
+        
     # Save model parameters
     def save_checkpoint(self, env_name, suffix="", ckpt_path=None):
         if not os.path.exists('checkpoints/'):
