@@ -13,7 +13,7 @@ REWARD_DEBUG = False
 
 # Reward configuration
 # To change reward-specific parameters (radius, sigma, etc.), edit rewards.py directly
-REWARD_TYPE = "edge_boxes_corner_squares"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares", "debug"
+REWARD_TYPE = "edge_boxes"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares", "debug"
 R0 = 1e-10  # Baseline reward
 R1 = 0.5   # Medium reward (e.g., outer square in corner_squares)
 R2 = 1e+10  # High reward (e.g., inner square in corner_squares)

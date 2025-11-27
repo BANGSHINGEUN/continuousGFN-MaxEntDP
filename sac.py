@@ -91,7 +91,6 @@ class SAC(object):
         self.critic_optim.zero_grad()
         qf_loss.backward()
         self.critic_optim.step()
-
         s0_mask = torch.all(state_batch == 0, dim=-1)
         non_s0_mask = ~s0_mask
         if s0_mask.any():
@@ -102,8 +101,9 @@ class SAC(object):
             
         pi = torch.cat([pi_s0, pi_non_s0], dim=0)
         log_pi = torch.cat([log_pi_s0, log_pi_non_s0], dim=0)
+        state_batch_reordered = torch.cat([state_batch[s0_mask], state_batch[non_s0_mask]], dim=0)
 
-        qf1_pi, qf2_pi = self.critic(state_batch, pi)
+        qf1_pi, qf2_pi = self.critic(state_batch_reordered, pi)
         min_qf_pi = torch.min(qf1_pi, qf2_pi)
 
         policy_loss = (log_pi - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
