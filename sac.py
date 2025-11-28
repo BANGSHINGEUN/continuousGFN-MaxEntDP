@@ -46,41 +46,14 @@ class SAC(object):
         done_batch       = done_batch.detach().to(self.device)
 
         with torch.no_grad():
-            # Problem 1: Handle sink states in next_state_batch
-            # Identify non-sink next states
-            non_sink_mask = ~torch.all(next_state_batch == self.env.sink_state, dim=-1)
-
-            # Initialize with zeros (will be masked out anyway)
-            next_state_action = torch.zeros_like(next_state_batch)
-            next_state_log_pi = torch.zeros(next_state_batch.shape[0], device=self.device)
-
-            # Only sample actions for non-sink next states
-            if non_sink_mask.any():
-                sampled_actions, sampled_log_pi = sample_actions(
-                    self.env, self.policy, next_state_batch[non_sink_mask]
+            next_state_action, next_state_log_pi = sample_actions(self.env, self.policy, next_state_batch)
+            next_state_action = torch.where(  
+                    torch.isinf(next_state_action),
+                    torch.zeros_like(next_state_action),
+                    next_state_action
                 )
-                # Replace -inf terminal actions with zeros (won't be used anyway due to done_batch)
-                sampled_actions = torch.where(  
-                    torch.isinf(sampled_actions),
-                    torch.zeros_like(sampled_actions),
-                    sampled_actions
-                )
-                next_state_action[non_sink_mask] = sampled_actions
-                next_state_log_pi[non_sink_mask] = sampled_log_pi
-
-            # Replace sink states with zeros for critic input (won't be used due to done_batch)
-            next_state_batch_clean = torch.where(
-                torch.isinf(next_state_batch),
-                torch.zeros_like(next_state_batch),
-                next_state_batch
-            )
-
-            qf1_next_target, qf2_next_target = self.critic_target(next_state_batch_clean, next_state_action)
+            qf1_next_target, qf2_next_target = self.critic_target(next_state_batch, next_state_action)
             min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - next_state_log_pi.unsqueeze(-1)
-            # FIXED: done_batch is "done" (1=done, 0=not done)
-            # Correct SAC Bellman: Q(s,a) = r + (1-done) * γ * Q(s',a')
-            # Intermediate (done=0): Q = r + 1*γ*Q' = r + γ*Q' ✓
-            # Terminal (done=1): Q = r + 0*γ*Q' = r ✓
             next_q_value = reward_batch + (1 - done_batch) * (min_qf_next_target)
 
         qf1, qf2 = self.critic(state_batch, action_batch)  # Two Q-functions to mitigate positive bias in the policy improvement step
@@ -91,6 +64,7 @@ class SAC(object):
         self.critic_optim.zero_grad()
         qf_loss.backward()
         self.critic_optim.step()
+
         s0_mask = torch.all(state_batch == 0, dim=-1)
         non_s0_mask = ~s0_mask
         if s0_mask.any():

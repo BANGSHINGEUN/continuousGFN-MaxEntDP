@@ -125,6 +125,7 @@ if seed == 0:
 run_name = f"d{delta}_{args.reward_type}_tb_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
 run_name += f"_n{n_components}_n0{n_components_s0}"
 run_name += f"_gamma{args.gamma_scheduler}_mile{args.scheduler_milestone}"
+run_name += f"_device{device}"
 print(run_name)
 if USE_WANDB:
     wandb.run.name = run_name  # type: ignore

@@ -117,9 +117,12 @@ BS = args.BS
 if seed == 0:
     seed = np.random.randint(int(1e6))
 
-run_name = f"SAC_d{delta}_{args.reward_type}_PB{args.PB}_lr{lr}_sd{seed}"
-run_name += f"_gamma{args.gamma_scheduler}_mile{args.scheduler_milestone}"
-run_name += f"_batch{args.sac_batch_size}"
+run_name = f"SAC_d{delta}_{args.reward_type}_lr{lr}_sd{seed}"
+run_name += f"_tau{args.tau}"
+run_name += f"_update_per_step{args.updates_per_step}"
+run_name += f"_target_update_interval{args.target_update_interval}"
+run_name += f"_uniform_ratio{args.uniform_ratio}"
+run_name += f"_device{device}"
 print(run_name)
 if USE_WANDB:
     wandb.run.name = run_name  # type: ignore
@@ -161,7 +164,7 @@ sac_agent = SAC(args, env)
 Uniform_model = Uniform()
 
 # Create replay memory
-memory = ReplayMemory(args.replay_size, seed, device=device)
+memory = ReplayMemory(args.replay_size, seed, device='cpu')
 
 bw_model = CirclePB(
     hidden_dim=args.hidden_dim,
@@ -174,23 +177,22 @@ bw_model = CirclePB(
 
 jsd = float("inf")
 sac_updates = 0  # Track SAC update steps
+exploration_eps = args.uniform_ratio  # 항상 10%는 Uniform로 탐색
 
 for i in trange(1, n_iterations + 1):
-
-
-    if i < n_iterations*args.uniform_ratio:
+    if np.random.rand() < exploration_eps:
         trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
             env,
             Uniform_model,
             BS,
         )
-
     else:
         trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
             env,
             sac_agent.policy,
             BS,
         )
+
     last_states = get_last_states(env, trajectories)
     logrewards = env.reward(last_states).log()
     bw_logprobs, all_bw_logprobs = evaluate_backward_logprobs(
