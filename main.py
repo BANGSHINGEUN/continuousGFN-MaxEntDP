@@ -8,10 +8,11 @@ from tqdm import tqdm, trange
 import argparse
 
 from env import Box, get_last_states
-from model import CirclePF, CirclePB
+from model import CirclePF, CirclePB, NeuralNet
 from sampling import (
     sample_trajectories,
     evaluate_backward_logprobs,
+    evaluate_state_flows,
 )
 
 from utils import (
@@ -80,15 +81,19 @@ parser.add_argument(
     choices=["learnable", "tied", "uniform"],
     default=config.PB,
 )
+parser.add_argument("--loss", type=str, choices=["tb", "db"], default=config.LOSS)
 parser.add_argument("--gamma_scheduler", type=float, default=config.GAMMA_SCHEDULER)
 parser.add_argument("--scheduler_milestone", type=int, default=config.SCHEDULER_MILESTONE)
 parser.add_argument("--seed", type=int, default=config.SEED)
 parser.add_argument("--lr", type=float, default=config.LR)
 parser.add_argument("--lr_Z", type=float, default=config.LR_Z)
 parser.add_argument("--lr_F", type=float, default=config.LR_F)
+parser.add_argument("--alpha", type=float, default=config.ALPHA)
 parser.add_argument("--tie_F", action="store_true", default=config.TIE_F)
 parser.add_argument("--BS", type=int, default=config.BS)
 parser.add_argument("--n_iterations", type=int, default=config.N_ITERATIONS)
+parser.add_argument("--n_evaluation_interval", type=int, default=config.N_EVALUATION_INTERVAL)
+parser.add_argument("--n_logging_interval", type=int, default=config.N_LOGGING_INTERVAL)
 parser.add_argument("--hidden_dim", type=int, default=config.HIDDEN_DIM)
 parser.add_argument("--n_hidden", type=int, default=config.N_HIDDEN)
 parser.add_argument("--n_evaluation_trajectories", type=int, default=config.N_EVALUATION_TRAJECTORIES)
@@ -123,7 +128,8 @@ n_components_s0 = args.n_components_s0
 if seed == 0:
     seed = np.random.randint(int(1e6))
 
-run_name = f"GFN_d{delta}_{args.reward_type}_tb_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
+run_name = f"GFN_d{delta}_{args.reward_type}_{args.loss}_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
+run_name += f"_UR{args.uniform_ratio}"
 run_name += f"_R0,R1,R2_{args.R0},{args.R1},{args.R2}"
 run_name += f"_BS{BS}"
 run_name += f"_device{device}"
@@ -183,6 +189,13 @@ bw_model = CirclePB(
     beta_max=args.beta_max,
 ).to(device)
 
+if args.loss == "db":
+    flow_model = NeuralNet(
+        hidden_dim=args.hidden_dim,
+        n_hidden=args.n_hidden,
+        torso=None if not args.tie_F else model.torso,
+        output_dim=1,
+    ).to(device)
 
 logZ = torch.zeros(1, requires_grad=True, device=device)
 optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -197,6 +210,16 @@ if args.PB != "uniform":
     )
 optimizer.add_param_group({"params": [logZ], "lr": lr_Z})
 
+if args.loss == "db":
+    optimizer.add_param_group(
+        {
+            "params": flow_model.output_layer.parameters()
+            if args.tie_F
+            else flow_model.parameters(),
+            "lr": lr_F,
+        }
+    )
+    print("using flow model")
 
 scheduler = torch.optim.lr_scheduler.MultiStepLR(
     optimizer,
@@ -220,7 +243,33 @@ for i in trange(n_iterations):
     )
 
     # TB (Trajectory Balance) loss
-    loss = torch.mean((logZ + logprobs - bw_logprobs - logrewards) ** 2)
+    if args.loss == "tb":
+        loss = torch.mean((logZ + logprobs - bw_logprobs - logrewards) ** 2)
+        
+    elif args.loss == "db":
+        log_state_flows = evaluate_state_flows(env, flow_model, trajectories, logZ)  # type: ignore
+        db_preds = all_logprobs + log_state_flows
+        db_targets = all_bw_logprobs + log_state_flows[:, 1:]
+        if args.alpha == 1.0:
+            db_targets = torch.cat(
+                [
+                    db_targets,
+                    torch.full(
+                        (db_targets.shape[0], 1),
+                        -float("inf"),
+                        device=db_targets.device,
+                    ),
+                ],
+                dim=1,
+            )
+            infinity_mask = db_targets == -float("inf")
+            _, indices_of_first_inf = torch.max(infinity_mask, dim=1)
+            db_targets = db_targets.scatter(
+                1, indices_of_first_inf.unsqueeze(1), logrewards.unsqueeze(1)
+            )
+            flat_db_preds = db_preds[db_preds != -float("inf")]
+            flat_db_targets = db_targets[db_targets != -float("inf")]
+            loss = torch.mean((flat_db_preds - flat_db_targets) ** 2)
 
     if torch.isinf(loss):
         raise ValueError("Infinite loss")
@@ -243,7 +292,7 @@ for i in trange(n_iterations):
     ):
         raise ValueError("NaN in model parameters")
 
-    if i % 100 == 0:
+    if i % args.n_logging_interval == 0:
         log_dict = {
             "loss": loss.item(),
             "sqrt(logZdiff**2)": np.sqrt((np.log(env.Z) - logZ.item())**2),
@@ -251,7 +300,7 @@ for i in trange(n_iterations):
         }
 
         # Evaluate JSD every 500 iterations and add to the same log
-        if i % 500 == 0:
+        if i % args.n_evaluation_interval == 0:
             with torch.no_grad():
                 model.uniform_ratio = 0.0
                 trajectories, _, _, _ = sample_trajectories(

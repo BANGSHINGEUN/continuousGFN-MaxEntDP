@@ -211,3 +211,15 @@ def evaluate_backward_logprobs(env, model, trajectories):
     all_logprobs = torch.stack(all_logprobs, dim=1)
 
     return logprobs, all_logprobs.flip(1)
+
+def evaluate_state_flows(env, model, trajectories, logZ):
+    state_flows = torch.full(
+        (trajectories.shape[0], trajectories.shape[1]),
+        -float("inf"),
+        device=trajectories.device,
+    )
+    non_sink_mask = torch.all(trajectories != env.sink_state, dim=-1)
+    state_flows[non_sink_mask] = model(trajectories[non_sink_mask]).squeeze(-1)
+    state_flows[:, 0] = logZ
+
+    return state_flows[:, :-1]
