@@ -8,7 +8,7 @@ from tqdm import tqdm, trange
 import argparse
 
 from env import Box, get_last_states
-from model import CirclePF, CirclePB, NeuralNet
+from model import CirclePF, CirclePB
 from sampling import (
     sample_trajectories,
     evaluate_backward_logprobs,
@@ -95,6 +95,7 @@ parser.add_argument("--n_evaluation_trajectories", type=int, default=config.N_EV
 parser.add_argument("--no_plot", action="store_true", default=config.NO_PLOT)
 parser.add_argument("--no_wandb", action="store_true", default=config.NO_WANDB)
 parser.add_argument("--wandb_project", type=str, default=config.WANDB_PROJECT)
+parser.add_argument("--uniform_ratio", type=float, default=config.UNIFORM_RATIO)
 args = parser.parse_args()
 
 if args.no_plot:
@@ -122,9 +123,9 @@ n_components_s0 = args.n_components_s0
 if seed == 0:
     seed = np.random.randint(int(1e6))
 
-run_name = f"d{delta}_{args.reward_type}_tb_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
-run_name += f"_n{n_components}_n0{n_components_s0}"
-run_name += f"_gamma{args.gamma_scheduler}_mile{args.scheduler_milestone}"
+run_name = f"GFN_d{delta}_{args.reward_type}_tb_PB{args.PB}_lr{lr}_lrZ{lr_Z}_sd{seed}"
+run_name += f"_R0,R1,R2_{args.R0},{args.R1},{args.R2}"
+run_name += f"_BS{BS}"
 run_name += f"_device{device}"
 print(run_name)
 if USE_WANDB:
@@ -169,6 +170,7 @@ model = CirclePF(
     n_components_s0=n_components_s0,
     beta_min=args.beta_min,
     beta_max=args.beta_max,
+    uniform_ratio=args.uniform_ratio,
 ).to(device)
 
 bw_model = CirclePB(
@@ -250,14 +252,16 @@ for i in trange(n_iterations):
 
         # Evaluate JSD every 500 iterations and add to the same log
         if i % 500 == 0:
-            trajectories, _, _, _ = sample_trajectories(
-                env, model, args.n_evaluation_trajectories
-            )
-            last_states = get_last_states(env, trajectories)
-            kde, fig4 = fit_kde(last_states, plot=True)
-            jsd = estimate_jsd(kde, true_kde)
+            with torch.no_grad():
+                model.uniform_ratio = 0.0
+                trajectories, _, _, _ = sample_trajectories(
+                    env, model, args.n_evaluation_trajectories
+                )
+                last_states = get_last_states(env, trajectories)
+                kde, fig4 = fit_kde(last_states, plot=True)
+                jsd = estimate_jsd(kde, true_kde)
 
-            log_dict["JSD"] = jsd
+                log_dict["JSD"] = jsd
 
             if not NO_PLOT:
                 colors = plt.cm.rainbow(np.linspace(0, 1, 10))
@@ -267,6 +271,8 @@ for i in trange(n_iterations):
                 log_dict["last_states"] = wandb.Image(fig1)
                 log_dict["trajectories"] = wandb.Image(fig2)
                 log_dict["kde"] = wandb.Image(fig4)
+
+        model.uniform_ratio = args.uniform_ratio
 
         if USE_WANDB:
             wandb.log(log_dict, step=i)

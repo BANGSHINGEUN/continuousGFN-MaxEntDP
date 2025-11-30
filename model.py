@@ -39,6 +39,7 @@ class CirclePF(NeuralNet):
         n_components=1,
         beta_min=0.1,
         beta_max=2.0,
+        uniform_ratio=0.0,
     ):
         output_dim = 3 * n_components  # Removed exit proba (was: 1 + 3 * n_components)
         super().__init__(
@@ -60,6 +61,7 @@ class CirclePF(NeuralNet):
         self.n_components_s0 = n_components_s0
         self.beta_min = beta_min
         self.beta_max = beta_max
+        self.uniform_ratio = uniform_ratio
 
     def forward(self, x):
         out = super().forward(x)
@@ -106,7 +108,6 @@ class CirclePF(NeuralNet):
         )
 
         return dist
-
 
 class CirclePB(NeuralNet):
     def __init__(

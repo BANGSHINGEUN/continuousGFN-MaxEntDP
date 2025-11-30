@@ -1,5 +1,6 @@
 import json
 import os
+from socket import if_indextoname
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -84,16 +85,17 @@ parser.add_argument("--n_evaluation_trajectories", type=int, default=config.N_EV
 parser.add_argument("--no_plot", action="store_true", default=config.NO_PLOT)
 parser.add_argument("--no_wandb", action="store_true", default=config.NO_WANDB)
 parser.add_argument("--wandb_project", type=str, default=config.WANDB_PROJECT)
+parser.add_argument("--uniform_ratio", type=float, default=config.UNIFORM_RATIO, help="Ratio of uniform policy")
+
 
 # SAC-specific arguments
 parser.add_argument("--tau", type=float, default=sac_config.TAU, help="Tau for soft update")
-parser.add_argument("--uniform_ratio", type=float, default=0.1, help="Ratio of uniform policy")
 parser.add_argument("--target_update_interval", type=int, default=sac_config.TARGET_UPDATE_INTERVAL, help="Target network update interval")
 parser.add_argument("--Critic_hidden_size", type=int, default=sac_config.CRITIC_HIDDEN_SIZE, help="Hidden size for SAC critic networks")
 parser.add_argument("--replay_size", type=int, default=sac_config.REPLAY_SIZE, help="Replay buffer size")
 parser.add_argument("--sac_batch_size", type=int, default=sac_config.SAC_BATCH_SIZE, help="SAC batch size")
 parser.add_argument("--updates_per_step", type=int, default=sac_config.UPDATES_PER_STEP, help="SAC updates per step")
-
+parser.add_argument("--without_backward_model", type=bool, default=sac_config.WITHOUT_BACKWARD_MODEL, help="Whether to use backward model")
 args = parser.parse_args()
 
 if args.no_plot:
@@ -118,10 +120,16 @@ if seed == 0:
     seed = np.random.randint(int(1e6))
 
 run_name = f"SAC_d{delta}_{args.reward_type}_lr{lr}_sd{seed}"
+if args.without_backward_model:
+    run_name += f"_without_backward_model"
+run_name += f"_R0,R1,R2_{args.R0},{args.R1},{args.R2}"
 run_name += f"_tau{args.tau}"
+run_name += f"_BS{BS}"
+run_name += f"_replay_size{args.replay_size}"
+run_name += f"_sac_batch_size{args.sac_batch_size}"
 run_name += f"_update_per_step{args.updates_per_step}"
 run_name += f"_target_update_interval{args.target_update_interval}"
-run_name += f"_uniform_ratio{args.uniform_ratio}"
+run_name += f"_UR{args.uniform_ratio}"
 run_name += f"_device{device}"
 print(run_name)
 if USE_WANDB:
@@ -164,7 +172,7 @@ sac_agent = SAC(args, env)
 Uniform_model = Uniform()
 
 # Create replay memory
-memory = ReplayMemory(args.replay_size, seed, device='cpu')
+memory = ReplayMemory(args.replay_size, seed, device=device)
 
 bw_model = CirclePB(
     hidden_dim=args.hidden_dim,
@@ -177,32 +185,42 @@ bw_model = CirclePB(
 
 jsd = float("inf")
 sac_updates = 0  # Track SAC update steps
-exploration_eps = args.uniform_ratio  # 항상 10%는 Uniform로 탐색
 
 for i in trange(1, n_iterations + 1):
-    if np.random.rand() < exploration_eps:
-        trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
-            env,
-            Uniform_model,
-            BS,
-        )
-    else:
-        trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
-            env,
-            sac_agent.policy,
-            BS,
+    with torch.no_grad():   # ★ 여기 추가
+        if np.random.rand() < args.uniform_ratio:
+            trajectories, actionss, _, _  = sample_trajectories(
+                env,
+                Uniform_model,
+                BS,
+            )
+        else:
+            trajectories, actionss, _, _  = sample_trajectories(
+                env,
+                sac_agent.policy,
+                BS,
+            )
+
+        last_states = get_last_states(env, trajectories)
+        logrewards = env.reward(last_states).log()
+        
+        bw_logprobs, all_bw_logprobs = evaluate_backward_logprobs(
+            env, bw_model, trajectories
         )
 
-    last_states = get_last_states(env, trajectories)
-    logrewards = env.reward(last_states).log()
-    bw_logprobs, all_bw_logprobs = evaluate_backward_logprobs(
-        env, bw_model, trajectories
-    )
+        if args.without_backward_model:
+            intermediate_rewards = torch.where(
+                all_bw_logprobs != -float("inf"),
+                torch.zeros_like(all_bw_logprobs),
+                all_bw_logprobs,
+                )
+        else:
+            intermediate_rewards = all_bw_logprobs
 
-    # Convert trajectories to transitions and push to replay memory
-    all_states, all_actions, all_rewards, all_next_states, all_dones = trajectories_to_transitions(
-        trajectories, actionss, all_bw_logprobs, logrewards, env
-    )
+        # Convert trajectories to transitions and push to replay memory
+        all_states, all_actions, all_rewards, all_next_states, all_dones = trajectories_to_transitions(
+            trajectories, actionss, intermediate_rewards, logrewards, env
+        )
     memory.push_batch(all_states, all_actions, all_rewards, all_next_states, all_dones)
 
     if len(memory) > args.sac_batch_size:
@@ -232,20 +250,20 @@ for i in trange(1, n_iterations + 1):
 
         # Evaluate JSD every 500 iterations and add to the same log
         if i % 500 == 0:
-            trajectories, _, _, _ = sample_trajectories(
-                env, sac_agent.policy, args.n_evaluation_trajectories
-            )
-            last_states = get_last_states(env, trajectories)
-            kde, fig4 = fit_kde(last_states, plot=True)
-            jsd = estimate_jsd(kde, true_kde)
+            with torch.no_grad():
+                trajectories, _, _, _ = sample_trajectories(
+                    env, sac_agent.policy, args.n_evaluation_trajectories
+                )
+                last_states = get_last_states(env, trajectories)
+                kde, fig4 = fit_kde(last_states, plot=True)
+                jsd = estimate_jsd(kde, true_kde)
 
-            log_dict["JSD"] = jsd
+                log_dict["JSD"] = jsd
 
             if not NO_PLOT:
                 colors = plt.cm.rainbow(np.linspace(0, 1, 10))
                 fig1 = plot_samples(last_states[:2000].detach().cpu().numpy())
                 fig2 = plot_trajectories(trajectories.detach().cpu().numpy()[:20])
-                fig3 = plot_termination_probabilities(sac_agent.policy)
 
                 log_dict["last_states"] = wandb.Image(fig1)
                 log_dict["trajectories"] = wandb.Image(fig2)

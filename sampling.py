@@ -1,6 +1,6 @@
 import torch
 import numpy as np
-
+import random
 
 def sample_actions(env, model, states):
     # states is a tensor of shape (n, dim)
@@ -8,8 +8,12 @@ def sample_actions(env, model, states):
     out = model.to_dist(states)
     if isinstance(out, tuple):  # s0 input returns (dist_r, dist_theta)
         dist_r, dist_theta = out
-        samples_r = dist_r.sample(torch.Size((batch_size,)))
-        samples_theta = dist_theta.sample(torch.Size((batch_size,)))
+        if random.random() < model.uniform_ratio:
+            samples_r = torch.rand(batch_size, device=env.device)
+            samples_theta = torch.rand(batch_size, device=env.device)
+        else:
+            samples_r = dist_r.sample(torch.Size((batch_size,)))
+            samples_theta = dist_theta.sample(torch.Size((batch_size,)))
 
         actions = (
             torch.stack(
@@ -48,7 +52,10 @@ def sample_actions(env, model, states):
         assert torch.all(
             B[~should_terminate] >= A[~should_terminate]
         )
-        samples = dist.sample()
+        if random.random() < model.uniform_ratio:
+            samples = torch.rand(batch_size, device=env.device)
+        else:
+            samples = dist.sample()
 
         actions = samples * (B - A) + A
         actions *= torch.pi / 2.0

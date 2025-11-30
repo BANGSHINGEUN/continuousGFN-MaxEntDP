@@ -4,7 +4,7 @@ Modify the values below to change the training configuration.
 """
 
 # Device configuration
-DEVICE = "cuda:0"  # Options: "cuda:0", "cuda:1", "cpu", etc.
+DEVICE = "cuda:1"  # Options: "cuda:0", "cuda:1", "cpu", etc.
 
 # Environment parameters
 DIM = 2
@@ -14,7 +14,7 @@ REWARD_DEBUG = False
 # Reward configuration
 # To change reward-specific parameters (radius, sigma, etc.), edit rewards.py directly
 REWARD_TYPE = "corner_squares"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares", "debug"
-R0 = 0.1  # Baseline reward
+R0 = 1e-3 # Baseline reward
 R1 = 0.5   # Medium reward (e.g., outer square in corner_squares)
 R2 = 10  # High reward (e.g., inner square in corner_squares)
 
@@ -25,6 +25,7 @@ BETA_MIN = 0.1  # Minimum value for the concentration parameters of the Beta dis
 BETA_MAX = 2.0  # Maximum value for the concentration parameters of the Beta distribution
 HIDDEN_DIM = 128
 N_HIDDEN = 3
+UNIFORM_RATIO = 0.2
 
 # Training parameters
 PB = "uniform"  # Options: "learnable", "tied", "uniform"
