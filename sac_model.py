@@ -73,7 +73,7 @@ class CirclePF(NeuralNet):
         beta_min=0.1,
         beta_max=2.0,
     ):
-        output_dim = 2  # Only alpha and beta for single Beta distribution
+        output_dim = 3 # Only alpha and beta for single Beta distribution
         super().__init__(
             dim=2, hidden_dim=hidden_dim, n_hidden=n_hidden, output_dim=output_dim
         )
@@ -95,10 +95,13 @@ class CirclePF(NeuralNet):
 
     def forward(self, x):
         out = super().forward(x)
-        log_alpha = out[..., 0]
-        log_beta = out[..., 1]
+        pre_sigmoid_exit = out[..., 0]
+        log_alpha = out[..., 1]
+        log_beta = out[..., 2]
 
+        exit_proba = torch.sigmoid(pre_sigmoid_exit)
         return (
+            exit_proba,
             self.beta_max * torch.sigmoid(log_alpha) + self.beta_min,
             self.beta_max * torch.sigmoid(log_beta) + self.beta_min,
         )
@@ -122,10 +125,10 @@ class CirclePF(NeuralNet):
             return dist_r, dist_theta
 
         # Otherwise, we use the neural network
-        alpha, beta = self.forward(x)
+        exit_proba, alpha, beta = self.forward(x)
         dist = Beta(alpha, beta)
 
-        return dist
+        return exit_proba, dist
 
 class Uniform():
     def __init__(self):

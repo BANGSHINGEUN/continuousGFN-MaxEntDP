@@ -46,41 +46,65 @@ class SAC(object):
         done_batch       = done_batch.detach().to(self.device)
 
         with torch.no_grad():
-            next_state_action, next_state_log_pi = sample_actions(self.env, self.policy, next_state_batch)
-            next_state_action = torch.where(  
-                    torch.isinf(next_state_action),
-                    torch.zeros_like(next_state_action),
-                    next_state_action
-                )
-            qf1_next_target, qf2_next_target = self.critic_target(next_state_batch, next_state_action)
-            min_qf_next_target = torch.min(qf1_next_target, qf2_next_target) - next_state_log_pi.unsqueeze(-1)
-            next_q_value = reward_batch + (1 - done_batch) * (min_qf_next_target)
+            # Separate next_state_batch based on done flag
+            done_mask = (done_batch == 1).squeeze(-1)  # (batch_size,)
+            # print(done_mask)
+            next_state_not_done = next_state_batch[~done_mask]  # States where done == 0
+            # print(next_state_not_done)
+            target_q_value = reward_batch[~done_mask].squeeze(-1)
+            # print(target_q_value)           
 
-        qf1, qf2 = self.critic(state_batch, action_batch)  # Two Q-functions to mitigate positive bias in the policy improvement step
-        qf1_loss = F.mse_loss(qf1, next_q_value)  # JQ = 𝔼(st,at)~D[0.5(Q1(st,at) - r(st,at) - γ(𝔼st+1~p[V(st+1)]))^2]
-        qf2_loss = F.mse_loss(qf2, next_q_value)  # JQ = 𝔼(st,at)~D[0.5(Q1(st,at) - r(st,at) - γ(𝔼st+1~p[V(st+1)]))^2]
+            _, _, next_state_exit_proba, next_state_action_naive, next_state_log_pi_naive = sample_actions(self.env, self.policy, next_state_not_done)
+
+            is_inf_mask = torch.all(torch.isinf(next_state_action_naive), dim=-1)
+        #     # 1. 반드시 terminal state에 도달하는 경우
+
+            target_q_value += next_state_exit_proba * (self.env.reward(next_state_not_done) - next_state_exit_proba.log())
+        #     # 2. 반드시 terminal state에 도달하지 않아도 되는 경우 
+
+            qf1_next_target, qf2_next_target = self.critic_target(next_state_not_done[~is_inf_mask], next_state_action_naive[~is_inf_mask])
+            min_qf_next_target = torch.min(qf1_next_target, qf2_next_target).squeeze(-1) 
+
+            target_q_value[~is_inf_mask] += (1 - next_state_exit_proba[~is_inf_mask]) * (min_qf_next_target - next_state_log_pi_naive[~is_inf_mask])
+
+        qf1, qf2 = self.critic(state_batch[~done_mask], action_batch[~done_mask])  # Two Q-functions to mitigate positive bias in the policy improvement step
+        qf1 = qf1.squeeze(-1)
+        qf2 = qf2.squeeze(-1)
+        qf1_loss = F.mse_loss(qf1, target_q_value)  
+        qf2_loss = F.mse_loss(qf2, target_q_value)  
+
         qf_loss = qf1_loss + qf2_loss
-
         self.critic_optim.zero_grad()
         qf_loss.backward()
         self.critic_optim.step()
 
         s0_mask = torch.all(state_batch == 0, dim=-1)
         non_s0_mask = ~s0_mask
+
+        policy_loss = torch.zeros_like(reward_batch).squeeze(-1)
+
         if s0_mask.any():
-            pi_s0, log_pi_s0 = sample_actions(self.env, self.policy, state_batch[s0_mask])
+            _, _, exit_proba_s0, action_naive_s0, log_pi_naive_s0 = sample_actions(self.env, self.policy, state_batch[s0_mask])
 
         if non_s0_mask.any():
-            pi_non_s0, log_pi_non_s0 = sample_actions(self.env, self.policy, state_batch[non_s0_mask])
-            
-        pi = torch.cat([pi_s0, pi_non_s0], dim=0)
-        log_pi = torch.cat([log_pi_s0, log_pi_non_s0], dim=0)
+            _, _, exit_proba_non_s0, action_naive_non_s0, log_pi_naive_non_s0 = sample_actions(self.env, self.policy, state_batch[non_s0_mask])
+
+        exit_proba = torch.cat([exit_proba_s0, exit_proba_non_s0], dim=0)
+        action_naive = torch.cat([action_naive_s0, action_naive_non_s0], dim=0)
+        log_pi_naive = torch.cat([log_pi_naive_s0, log_pi_naive_non_s0], dim=0)
         state_batch_reordered = torch.cat([state_batch[s0_mask], state_batch[non_s0_mask]], dim=0)
+        is_inf_mask = torch.all(torch.isinf(action_naive), dim=-1)
+        is_non_zero_mask = torch.where(exit_proba != 0, True, False)
 
-        qf1_pi, qf2_pi = self.critic(state_batch_reordered, pi)
+        policy_loss[is_non_zero_mask] += exit_proba[is_non_zero_mask] * (exit_proba[is_non_zero_mask].log() - self.env.reward(state_batch_reordered[is_non_zero_mask]))
+
+
+        qf1_pi, qf2_pi = self.critic(state_batch_reordered[~is_inf_mask], action_naive[~is_inf_mask])
+
         min_qf_pi = torch.min(qf1_pi, qf2_pi)
-
-        policy_loss = (log_pi - min_qf_pi).mean() # Jπ = 𝔼st∼D,εt∼N[α * logπ(f(εt;st)|st) − Q(st,f(εt;st))]
+        min_qf_pi = min_qf_pi.squeeze(-1)
+        policy_loss[~is_inf_mask] += (1 - exit_proba[~is_inf_mask]) * (log_pi_naive[~is_inf_mask] - min_qf_pi)
+        policy_loss = policy_loss.mean()
 
         self.policy_optim.zero_grad()
         policy_loss.backward()

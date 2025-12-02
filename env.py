@@ -12,6 +12,7 @@ class Box:
         self,
         dim=2,
         delta=0.1,
+        epsilon=1e-10,
         R0=0.1,
         R1=1.0,
         R2=2.0,
@@ -23,6 +24,7 @@ class Box:
         # Set verify_actions to False to disable action verification for faster step execution.
         self.dim = dim
         self.delta = delta
+        self.epsilon = epsilon
         self.device_str = device_str
         self.device = torch.device(device_str)
         self.terminal_action = torch.full((dim,), -float("inf"), device=self.device)

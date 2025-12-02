@@ -43,6 +43,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--device", type=str, default=sac_config.DEVICE)
 parser.add_argument("--dim", type=int, default=config.DIM)
 parser.add_argument("--delta", type=float, default=config.DELTA)
+parser.add_argument("--epsilon", type=float, default=config.EPSILON)
 parser.add_argument("--R0", type=float, default=config.R0, help="Baseline reward value")
 parser.add_argument("--R1", type=float, default=config.R1, help="Medium reward value (e.g., outer square)")
 parser.add_argument("--R2", type=float, default=config.R2, help="High reward value (e.g., inner square)")
@@ -113,6 +114,7 @@ if USE_WANDB:
 device = args.device
 dim = args.dim
 delta = args.delta
+epsilon = args.epsilon
 seed = args.seed
 lr = args.lr
 n_iterations = args.n_iterations
@@ -145,6 +147,7 @@ print(f"Using device: {device}")
 env = Box(
     dim=dim,
     delta=delta,
+    epsilon=epsilon,
     device_str=device,
     reward_type=args.reward_type,
     reward_debug=args.reward_debug,

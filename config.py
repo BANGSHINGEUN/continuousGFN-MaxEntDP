@@ -9,6 +9,7 @@ DEVICE = "cuda:2"  # Options: "cuda:0", "cuda:1", "cpu", etc.
 # Environment parameters
 DIM = 2
 DELTA = 0.25
+EPSILON = 1e-10
 REWARD_DEBUG = False
 
 # Reward configuration

@@ -24,6 +24,10 @@ def trajectories_to_transitions(trajectories, actionss, all_bw_logprobs, logrewa
     # Extract states and next_states for intermediate transitions
     # Match the length to all_bw_logprobs
 
+
+    # Extract states and next_states for intermediate transitions
+    # Match the length to all_bw_logprobs
+
     states = trajectories[:, :-1, :]  
     next_states = trajectories[:, 1:, :] 
     is_not_sink = torch.all(states != env.sink_state, dim=-1)
@@ -31,18 +35,15 @@ def trajectories_to_transitions(trajectories, actionss, all_bw_logprobs, logrewa
     last_state = is_not_sink & is_next_sink
     dones = torch.zeros_like(last_state, dtype=torch.float32)  # (batch_size, bw_length)
     dones[last_state] = 1.0
-    dones = dones[:, 1:]
-    rewards = all_bw_logprobs
-    rewards = torch.where(last_state[:,1:], rewards + logrewards.unsqueeze(1), rewards)
-    states = states[:, :-1, :]  
-    next_states = next_states[:, :-1, :] 
-    actions = actionss[:, :-1, :] 
+    rewards = torch.cat([all_bw_logprobs, torch.full((all_bw_logprobs.shape[0], 1), float('-inf'), device=all_bw_logprobs.device)], dim=1)
+    rewards[dones == 1] = logrewards
+
     # Check which rewards are valid (not inf/nan)
     is_valid = torch.isfinite(rewards)  # (batch_size, bw_length)
 
     # Flatten batch and time dimensions for transitions
     states_flat = states[is_valid]
-    actions_flat = actions[is_valid]
+    actions_flat = actionss[is_valid]
     rewards_flat = rewards[is_valid]
     next_states_flat = next_states[is_valid]
     dones_flat = dones[is_valid]
