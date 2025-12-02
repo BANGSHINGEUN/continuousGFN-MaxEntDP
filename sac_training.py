@@ -240,7 +240,7 @@ for i in trange(1, n_iterations + 1):
     ):
         raise ValueError("NaN in model parameters")
 
-    if i % args.n_evaluation_interval == 0:
+    if i % args.n_logging_interval == 0:
         log_dict = {
             "sac/critic_1_loss": qf1_loss,
             "sac/critic_2_loss": qf2_loss,
