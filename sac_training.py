@@ -240,7 +240,7 @@ for i in trange(1, n_iterations + 1):
     ):
         raise ValueError("NaN in model parameters")
 
-    if i % 100 == 0:
+    if i % args.n_evaluation_interval == 0:
         log_dict = {
             "sac/critic_1_loss": qf1_loss,
             "sac/critic_2_loss": qf2_loss,
@@ -251,7 +251,7 @@ for i in trange(1, n_iterations + 1):
         }
 
         # Evaluate JSD every 500 iterations and add to the same log
-        if i % 500 == 0:
+        if i % args.n_evaluation_interval == 0:
             with torch.no_grad():
                 trajectories, _, _, _ = sample_trajectories(
                     env, sac_agent.policy, args.n_evaluation_trajectories

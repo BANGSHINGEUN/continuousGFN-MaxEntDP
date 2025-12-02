@@ -8,7 +8,7 @@ def sample_actions(env, model, states):
     out = model.to_dist(states)
     if isinstance(out, tuple):  # s0 input returns (dist_r, dist_theta)
         dist_r, dist_theta = out
-        if random.random() < model.uniform_ratio:
+        if model.uniform:
             samples_r = torch.rand(batch_size, device=env.device)
             samples_theta = torch.rand(batch_size, device=env.device)
         else:
@@ -25,13 +25,8 @@ def sample_actions(env, model, states):
             )
             * env.delta
         )
-        logprobs = (
-            dist_r.log_prob(samples_r)
-            + dist_theta.log_prob(samples_theta)
-            - torch.log(samples_r * env.delta)
-            - np.log(np.pi / 2)
-            - np.log(env.delta)  # why ?
-        )
+
+        return actions, samples_r, samples_theta
     else:
         dist = out
 
@@ -52,7 +47,7 @@ def sample_actions(env, model, states):
         assert torch.all(
             B[~should_terminate] >= A[~should_terminate]
         )
-        if random.random() < model.uniform_ratio:
+        if model.uniform:
             samples = torch.rand(batch_size, device=env.device)
         else:
             samples = dist.sample()
@@ -63,50 +58,116 @@ def sample_actions(env, model, states):
             torch.stack([torch.cos(actions), torch.sin(actions)], dim=1) * env.delta
         )
 
-        logprobs = (
-            dist.log_prob(samples)
-            - np.log(env.delta)
-            - np.log(np.pi / 2)
-            - torch.log(B - A)
-        )
-
         # Set terminal actions and zero logprobs for terminated states
         actions[should_terminate] = -float("inf")
-        logprobs[should_terminate] = 0.0
-
-    return actions, logprobs
+        samples[should_terminate] = -float("inf")
+    return actions, samples
 
 
 def sample_trajectories(env, model, n_trajectories):
-    step = 0
     states = torch.zeros((n_trajectories, env.dim), device=env.device)
     actionss = []
+    sampless = []
     trajectories = [states]
-    trajectories_logprobs = torch.zeros((n_trajectories,), device=env.device)
-    all_logprobs = []
+    first = True
     while not torch.all(states == env.sink_state):
-        step_logprobs = torch.full((n_trajectories,), -float("inf"), device=env.device)
         non_terminal_mask = torch.all(states != env.sink_state, dim=-1)
         actions = torch.full(
             (n_trajectories, env.dim), -float("inf"), device=env.device
         )
-        non_terminal_actions, logprobs = sample_actions(
-            env,
-            model,
-            states[non_terminal_mask],
+        samples = torch.full(
+            (n_trajectories, env.dim), -float("inf"), device=env.device
         )
+        if first:
+            first = False
+            non_terminal_actions, non_terminal_samples_r, non_terminal_samples_theta = sample_actions(
+                env,
+                model,
+                states[non_terminal_mask],
+            )
+            non_terminal_samples = torch.cat([non_terminal_samples_r.unsqueeze(-1), non_terminal_samples_theta.unsqueeze(-1)], dim=-1)
+            samples[non_terminal_mask] = non_terminal_samples.reshape(-1, env.dim)
+        else:
+            non_terminal_actions, non_terminal_samples = sample_actions(
+                env,
+                model,
+                states[non_terminal_mask],
+            )
+            non_terminal_samples = torch.cat([non_terminal_samples.unsqueeze(-1), torch.zeros_like(non_terminal_samples).unsqueeze(-1)], dim=-1)
+            samples[non_terminal_mask] = non_terminal_samples.reshape(-1, env.dim)
+        
         actions[non_terminal_mask] = non_terminal_actions.reshape(-1, env.dim)
         actionss.append(actions)
+        sampless.append(samples)
         states = env.step(states, actions)
         trajectories.append(states)
-        trajectories_logprobs[non_terminal_mask] += logprobs
-        step_logprobs[non_terminal_mask] = logprobs
-        all_logprobs.append(step_logprobs)
-        step += 1
     trajectories = torch.stack(trajectories, dim=1)
     actionss = torch.stack(actionss, dim=1)
+    sampless = torch.stack(sampless, dim=1)
+    return trajectories, actionss, sampless
+
+
+def evaluate_forward_step_logprobs(env, model, current_states, samples):
+    if torch.all(current_states[0] == 0.0):
+        dist_r, dist_theta = model.to_dist(current_states)
+        samples_r = samples[:, 0]
+        samples_theta = samples[:, 1]
+
+        step_logprobs = (
+            dist_r.log_prob(samples_r)
+            + dist_theta.log_prob(samples_theta)
+            - torch.log(samples_r * env.delta)
+            - np.log(np.pi / 2)
+            - np.log(env.delta)  # why ?
+            )
+        
+    else:
+        step_logprobs = torch.zeros((current_states.shape[0],), device=env.device)
+        should_terminate = torch.any(samples == -float("inf"), dim=-1)
+        if current_states.shape[0] == should_terminate.sum():
+            all_terminate = torch.all(samples == -float("inf"), dim=-1)
+            step_logprobs[all_terminate] = -float("inf")
+            return step_logprobs
+        non_terminal_states = current_states[~should_terminate]
+        non_terminal_samples = samples[~should_terminate]
+        dist = model.to_dist(non_terminal_states)
+
+        A = torch.where(
+            non_terminal_states[:, 0] <= 1 - env.delta,
+            0.0,
+            2.0 / torch.pi * torch.arccos((1 - non_terminal_states[:, 0]) / env.delta),
+        )
+        B = torch.where(
+            non_terminal_states[:, 1] <= 1 - env.delta,
+            1.0,
+            2.0 / torch.pi * torch.arcsin((1 - non_terminal_states[:, 1]) / env.delta),
+        )
+
+        non_terminal_step_logprobs = (
+            dist.log_prob(non_terminal_samples[:,0])
+            - np.log(env.delta)
+            - np.log(np.pi / 2)
+            - torch.log(B - A)
+        )
+        step_logprobs[~should_terminate] = non_terminal_step_logprobs
+        all_terminate = torch.all(samples == -float("inf"), dim=-1)
+        step_logprobs[all_terminate] = -float("inf")
+
+    return step_logprobs
+
+def evaluate_forward_logprobs(env, model, trajectories, sampless):
+    logprobs = torch.zeros((trajectories.shape[0],), device=env.device)
+    all_logprobs = []
+    for i in range(trajectories.shape[1] - 1):
+        current_states = trajectories[:, i]
+        samples = sampless[:, i]
+        step_logprobs = evaluate_forward_step_logprobs(env, model, current_states, samples)
+        is_finite = torch.isfinite(step_logprobs)
+        logprobs[is_finite] += step_logprobs[is_finite]
+        all_logprobs.append(step_logprobs)
     all_logprobs = torch.stack(all_logprobs, dim=1)
-    return trajectories, actionss, trajectories_logprobs, all_logprobs
+
+    return logprobs, all_logprobs
 
 
 def evaluate_backward_step_logprobs(env, model, current_states, previous_states):

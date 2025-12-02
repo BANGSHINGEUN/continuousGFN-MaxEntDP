@@ -4,7 +4,7 @@ Modify the values below to change the training configuration.
 """
 
 # Device configuration
-DEVICE = "cuda:3"  # Options: "cuda:0", "cuda:1", "cpu", etc.
+DEVICE = "cuda:2"  # Options: "cuda:0", "cuda:1", "cpu", etc.
 
 # Environment parameters
 DIM = 2
@@ -13,7 +13,7 @@ REWARD_DEBUG = False
 
 # Reward configuration
 # To change reward-specific parameters (radius, sigma, etc.), edit rewards.py directly
-REWARD_TYPE = "corner_squares"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares", "debug"
+REWARD_TYPE = "corner_small_squares"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "corner_small_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares", "debug"
 R0 = 1e-3 # Baseline reward
 R1 = 0.5   # Medium reward (e.g., outer square in corner_squares)
 R2 = 10 # High reward (e.g., inner square in corner_squares)
@@ -39,11 +39,11 @@ LR_Z = 1e-3
 LR_F = 1e-2
 TIE_F = False
 BS = 256  # Batch size
-N_ITERATIONS = 10000
-N_EVALUATION_INTERVAL = 250
+N_ITERATIONS = 5000
+N_EVALUATION_INTERVAL = 200
 N_LOGGING_INTERVAL = 100
 N_EVALUATION_TRAJECTORIES = 10000
-
+REPLAY_SIZE = 256
 # Logging parameters
 NO_PLOT = False
 NO_WANDB = False
