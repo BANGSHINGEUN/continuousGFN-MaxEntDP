@@ -14,9 +14,7 @@ from sampling import (
     sample_trajectories,
     evaluate_backward_logprobs,
     evaluate_state_flows,
-    evaluate_forward_logprobs,
 )
-from replay_memory import TrajectoryReplayMemory
 
 from utils import (
     fit_kde,
@@ -181,7 +179,6 @@ model = CirclePF(
     n_components_s0=n_components_s0,
     beta_min=args.beta_min,
     beta_max=args.beta_max,
-    uniform = False,
 ).to(device)
 
 bw_model = CirclePB(
@@ -234,36 +231,14 @@ scheduler = torch.optim.lr_scheduler.MultiStepLR(
 
 jsd = float("inf")
 
-memory = TrajectoryReplayMemory(args.replay_size, seed, device)
-
 for i in trange(n_iterations):
     optimizer.zero_grad()
-    if np.random.rand() < args.uniform_ratio: 
-        model.uniform = True
-        trajectories, _, sampless = sample_trajectories(
-            env,
-            model,
-            BS,
-        )
-    else:
-        model.uniform = False
-        trajectories, _, sampless = sample_trajectories(
-            env,
-            model,
-            BS,
-        )
-    
-    memory.push_batch(trajectories, sampless)
 
-    trajectories, sampless = memory.sample(BS)
-
-    while torch.all(trajectories[:,-2,:] == env.sink_state):
-        trajectories = trajectories[:,:-1,:]
-        sampless = sampless[:,:-1,:]
-    
-    logprobs, all_logprobs = evaluate_forward_logprobs(env, model, trajectories, sampless)
-
-    # Store trajectories in replay buffer
+    trajectories, actionss, logprobs, all_logprobs = sample_trajectories(
+        env,
+        model,
+        BS,
+    )
     last_states = get_last_states(env, trajectories)
     logrewards = env.reward(last_states).log()
     bw_logprobs, all_bw_logprobs = evaluate_backward_logprobs(
@@ -330,8 +305,7 @@ for i in trange(n_iterations):
         # Evaluate JSD every 500 iterations and add to the same log
         if i % args.n_evaluation_interval == 0:
             with torch.no_grad():
-                model.uniform = False
-                trajectories, _, _ = sample_trajectories(
+                trajectories,_, _, _ = sample_trajectories(
                     env, model, args.n_evaluation_trajectories
                 )
                 last_states = get_last_states(env, trajectories)

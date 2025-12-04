@@ -54,6 +54,32 @@ class Box:
         else:
             self.reward_fn = get_reward_function(reward_type)
             self.Z_fn = get_Z_function(reward_type)
+    
+    def is_actions_valid(self, states, actions
+    ):
+        """Check if actions are valid: First, verify that no state component is within epsilon distance from the bounds,
+        then for each state [x_1, ..., x_d], the action [a_1, ..., a_d] needs to satisfy
+        0 <= a_i < min(self.delta_max, 1 - x_i) for all i. Assume all actions are non terminal. Basically, this means
+        that if one coordinate is >= 1 - self.epsilon, then the corresponding action should be "exit"."""
+        first_condition = torch.all(
+            torch.logical_and(
+                states >= 0,
+                states <= 1 - self.epsilon,
+            )
+        )
+
+        second_condition = torch.all(
+            torch.logical_and(
+                actions >= 0,
+                actions
+                <= torch.min(
+                    torch.full((self.dim,), self.delta, device=self.device),
+                    1 - states,
+                ),
+            )
+        )
+        out = first_condition and second_condition
+        return out
 
     def is_terminal_action_mask(self, actions):
         """Return a mask of terminal actions."""
@@ -70,6 +96,9 @@ class Box:
         non_terminal_mask = ~self.is_terminal_action_mask(non_sink_actions)
         non_terminal_states = non_sink_states[non_terminal_mask]
         non_terminal_actions = non_sink_actions[non_terminal_mask]
+        # Then, if verify_actions is True, check if actions are valid.
+        if self.verify_actions:
+            assert self.is_actions_valid(non_terminal_states, non_terminal_actions)
         # Then, take a step and store that in a new tensor.
         new_states = torch.full_like(states, -float("inf"))
         non_sink_new_states = new_states[non_sink_mask]
@@ -103,4 +132,3 @@ def get_last_states(env: Box, trajectories):
     mask.scatter_(1, non_sink.cumsum(dim=-1).argmax(dim=-1, keepdim=True), True)
 
     return trajectories[mask]
-        

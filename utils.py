@@ -16,14 +16,7 @@ def get_test_states(n=100, maxi=1.0):
 def plot_reward(env):
     test_states, n = get_test_states()
     test_states = torch.FloatTensor(test_states)
-
-    # Check if states are terminal (at least one dimension is within delta of boundary)
-    should_terminate = torch.any(test_states >= 1 - env.delta, dim=-1)
-
-    # Calculate rewards
-    reward = torch.full((test_states.shape[0],), 1e-9)
-    reward[should_terminate] = env.reward(test_states[should_terminate])
-
+    reward = env.reward(test_states)
     reward = reward.reshape(n, n)
     fig = plt.imshow(reward, origin="lower", extent=[0, 1, 0, 1])
     plt.xticks([])
@@ -65,7 +58,6 @@ def fit_kde(
         plt.show()
     plt.close("all")
     return kde, fig
-
 
 def estimate_jsd(kde1, kde2):
     # Estimate Jensen-Shannon divergence between two KDEs
@@ -113,7 +105,6 @@ def plot_termination_probabilities(model, plot=False):
     plt.close("all")
     return fig
 
-
 def plot_samples(samples, plot=False):
     fig = plt.scatter(samples[:, 0], samples[:, 1])
     if plot:
@@ -127,16 +118,7 @@ def sample_from_reward(env, n_samples):
     samples = []
     while len(samples) < n_samples:
         sample = np.random.rand(n_samples, 2)
-        sample_tensor = torch.FloatTensor(sample)
-
-        # Check if states are terminal (at least one dimension is within delta of boundary)
-        should_terminate = torch.any(sample_tensor >= 1 - env.delta, dim=-1)
-
-        # Calculate rewards (non-terminal states get 1e-9)
-        rewards = torch.full((sample_tensor.shape[0],), 1e-9)
-        rewards[should_terminate] = env.reward(sample_tensor[should_terminate])
-        rewards = rewards.numpy()
-
+        rewards = env.reward(torch.FloatTensor(sample)).numpy()
         mask = np.random.rand(n_samples) * (env.R0 + max(env.R1, env.R2)) < rewards
         true_samples = sample[mask]
         samples.extend(true_samples[-(n_samples - len(samples)) :])

@@ -36,6 +36,7 @@ class SAC(object):
             gamma=args.gamma_scheduler,
         )
 
+
     def update_parameters(self, memory, batch_size, updates):
         # Sample a batch from memory
         state_batch, action_batch, reward_batch, next_state_batch, done_batch = memory.sample(batch_size=batch_size)
@@ -46,23 +47,25 @@ class SAC(object):
         reward_batch     = reward_batch.detach().to(self.device)
         next_state_batch = next_state_batch.detach().to(self.device)
         done_batch       = done_batch.detach().to(self.device)
-
         with torch.no_grad():
             # Separate next_state_batch based on done flag
             done_mask = (done_batch == 1).squeeze(-1)  # (batch_size,)
-            target_q_value = reward_batch[~done_mask].squeeze(-1)
             next_state_not_done = next_state_batch[~done_mask]  # States where done == 0
+            target_q_value = reward_batch[~done_mask].squeeze(-1)
+
 
             _, _, next_state_exit_proba, next_state_action_naive, next_state_log_pi_naive = sample_actions(self.env, self.policy, next_state_not_done)
 
             is_inf_mask = torch.all(torch.isinf(next_state_action_naive), dim=-1)
-            #1. 반드시 terminal state에 도달하는 경우
+        #     # 1. 반드시 terminal state에 도달하는 경우
+
             target_q_value += next_state_exit_proba * (self.env.reward(next_state_not_done).log() - next_state_exit_proba.log())
 
-            #2. 반드시 terminal state에 도달하지 않아도 되는 경우 
+
             qf1_next_target, qf2_next_target = self.critic_target(next_state_not_done[~is_inf_mask], next_state_action_naive[~is_inf_mask])
             min_qf_next_target = torch.min(qf1_next_target, qf2_next_target).squeeze(-1) 
-            target_q_value[~is_inf_mask] += (1 - next_state_exit_proba[~is_inf_mask]) * (min_qf_next_target - ((1 - next_state_exit_proba[~is_inf_mask]).log() + next_state_log_pi_naive[~is_inf_mask]))
+
+            target_q_value[~is_inf_mask] += (1 - next_state_exit_proba[~is_inf_mask]) * (min_qf_next_target - next_state_log_pi_naive[~is_inf_mask])
 
         qf1, qf2 = self.critic(state_batch[~done_mask], action_batch[~done_mask])  # Two Q-functions to mitigate positive bias in the policy improvement step
         qf1 = qf1.squeeze(-1)
@@ -81,12 +84,14 @@ class SAC(object):
 
         self.critic_optim.step()
 
-        policy_loss = None  # Initialize as None instead of 0
+        policy_loss = torch.zeros_like(reward_batch).squeeze(-1).mean()
 
         if updates % self.policy_update_interval == 0:
             
             s0_mask = torch.all(state_batch == 0, dim=-1)
             non_s0_mask = ~s0_mask
+
+            policy_loss = torch.zeros_like(reward_batch).squeeze(-1)
 
             if s0_mask.any():
                 _, _, exit_proba_s0, action_naive_s0, log_pi_naive_s0 = sample_actions(self.env, self.policy, state_batch[s0_mask])
@@ -100,17 +105,21 @@ class SAC(object):
             state_batch_reordered = torch.cat([state_batch[s0_mask], state_batch[non_s0_mask]], dim=0)
             is_inf_mask = torch.all(torch.isinf(action_naive), dim=-1)
             is_non_zero_mask = torch.where(exit_proba != 0, True, False)
-            policy_loss = torch.zeros_like(exit_proba).squeeze(-1)
 
             policy_loss[is_non_zero_mask] += exit_proba[is_non_zero_mask] * (exit_proba[is_non_zero_mask].log() - self.env.reward(state_batch_reordered[is_non_zero_mask]).log())
+
 
             qf1_pi, qf2_pi = self.critic(state_batch_reordered[~is_inf_mask], action_naive[~is_inf_mask])
 
             min_qf_pi = torch.min(qf1_pi, qf2_pi)
             min_qf_pi = min_qf_pi.squeeze(-1)
-            
-            policy_loss[~is_inf_mask] += (1 - exit_proba[~is_inf_mask]) * ((1 - exit_proba[~is_inf_mask]).log() + log_pi_naive[~is_inf_mask] - min_qf_pi)
+            min_qf_pi = min_qf_pi.detach()
+
+
+            policy_loss[~is_inf_mask] += (1 - exit_proba[~is_inf_mask]) * (log_pi_naive[~is_inf_mask] - min_qf_pi)
+
             policy_loss = policy_loss.mean()
+
 
             self.policy_optim.zero_grad()
             policy_loss.backward()
@@ -119,12 +128,11 @@ class SAC(object):
                     p.grad.data.clamp_(-10, 10).nan_to_num_(0.0)
 
             self.policy_optim.step()
-            self.policy_scheduler.step()
 
         if updates % self.target_update_interval == 0:
             soft_update(self.critic_target, self.critic, self.tau)
 
-        return qf1_loss.item(), qf2_loss.item(), policy_loss.item() if policy_loss is not None else None
+        return qf1_loss.item(), qf2_loss.item(), policy_loss.item()
         
     # Save model parameters
     def save_checkpoint(self, env_name, suffix="", ckpt_path=None):

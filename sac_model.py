@@ -130,19 +130,77 @@ class CirclePF(NeuralNet):
 
         return exit_proba, dist
 
-class Uniform():
-    def __init__(self):
-        pass
+class Uniform:
+    def __init__(self, delta=0.25, box_max=1.0):
+        """
+        delta: env.delta (한 step의 최대 길이)
+        box_max: [0, box_max]×[0, box_max] 영역을 가정
+        """
+        self.delta = float(delta)
+        self.box_max = float(box_max)
+        # 예: box_max=1.0, delta=0.25 -> L = 4
+        self.L = int(round(self.box_max / self.delta))
 
-    def to_dist(self, x):
-        # Set device to match x (input tensor)
+    def _level(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (batch, dim>=2)
+        level k(x) = floor(max(x, y) / delta) in {0, ..., L}
+        """
+        # 2D라고 가정 (필요하면 x[:, :2]만 사용)
+        max_coord, _ = x[:, :2].max(dim=-1)   # (batch,)
+        max_coord = max_coord.clamp(min=0.0, max=self.box_max)
+
+        level = torch.floor(max_coord / self.delta).long()  # 0..L
+        level = level.clamp(min=0, max=self.L)
+        return level
+
+    def _exit_proba_from_state(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        x: (batch, dim)
+        p_k = 1 / (L + 1 - k)
+        """
         device = x.device
+        level = self._level(x)                            # (batch,)
+        denom = (self.L + 1 - level).to(torch.float32)    # (batch,)
+        exit_proba = 1.0 / denom
+        return exit_proba.to(device)
+
+    def to_dist(self, x: torch.Tensor):
+        """
+        x: (batch, dim)
+        return:
+          exit_proba: (batch,)
+          dist:       Beta 분포 (여기선 Beta(1,1), uniform on [0,1])
+        """
+        device = x.device
+        batch_size = x.shape[0]
+
+        # s0 처리: 배치 전체가 원점일 때
         if torch.all(x[0] == 0.0):
             assert torch.all(
                 x == 0.0
-            )  # If one of the states is s0, all of them must be
-            return Beta(torch.tensor(1., device=device), torch.tensor(1., device=device)), Beta(torch.tensor(1., device=device), torch.tensor(1., device=device))
-        return Beta(torch.tensor(1., device=device), torch.tensor(1., device=device))
+            ), "If one of the states is s0, all of them must be s0 in this branch."
+
+            # Never exit at s0
+            exit_proba = torch.zeros(batch_size, device=device)
+
+            # 원래 코드 스타일 유지: scalar Beta(1,1) (broadcast)
+            dist = Beta(
+                torch.tensor(1.0, device=device),
+                torch.tensor(1.0, device=device),
+            )
+            return exit_proba, dist
+
+        # s0가 아닌 일반 상태들: 위치에 따라 exit_proba 부여
+        exit_proba = self._exit_proba_from_state(x)
+
+        # 각 state마다 independent Beta(1,1)
+        dist = Beta(
+            torch.ones(batch_size, device=device),
+            torch.ones(batch_size, device=device),
+        )
+        return exit_proba, dist
+
 
 class CirclePB(NeuralNet):
     def __init__(

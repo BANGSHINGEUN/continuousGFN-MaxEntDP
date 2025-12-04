@@ -1,6 +1,5 @@
 import json
 import os
-from socket import if_indextoname
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
@@ -24,7 +23,6 @@ from utils import (
     plot_samples,
     estimate_jsd,
     plot_trajectories,
-    plot_termination_probabilities,
 )
 
 import config
@@ -94,6 +92,7 @@ parser.add_argument("--uniform_ratio", type=float, default=config.UNIFORM_RATIO,
 # SAC-specific arguments
 parser.add_argument("--tau", type=float, default=sac_config.TAU, help="Tau for soft update")
 parser.add_argument("--target_update_interval", type=int, default=sac_config.TARGET_UPDATE_INTERVAL, help="Target network update interval")
+parser.add_argument("--policy_update_interval", type=int, default=sac_config.POLICY_UPDATE_INTERVAL, help="Policy update interval")
 parser.add_argument("--Critic_hidden_size", type=int, default=sac_config.CRITIC_HIDDEN_SIZE, help="Hidden size for SAC critic networks")
 parser.add_argument("--replay_size", type=int, default=sac_config.REPLAY_SIZE, help="Replay buffer size")
 parser.add_argument("--sac_batch_size", type=int, default=sac_config.SAC_BATCH_SIZE, help="SAC batch size")
@@ -133,6 +132,7 @@ run_name += f"_replay_size{args.replay_size}"
 run_name += f"_sac_batch_size{args.sac_batch_size}"
 run_name += f"_update_per_step{args.updates_per_step}"
 run_name += f"_target_update_interval{args.target_update_interval}"
+run_name += f"_policy_update_interval{args.policy_update_interval}"
 run_name += f"_UR{args.uniform_ratio}"
 run_name += f"_device{device}"
 print(run_name)
@@ -191,6 +191,11 @@ bw_model = CirclePB(
 jsd = float("inf")
 sac_updates = 0  # Track SAC update steps
 
+# Initialize loss tracking variables
+qf1_loss = 0.0
+qf2_loss = 0.0
+policy_loss = None
+
 for i in trange(1, n_iterations + 1):
     with torch.no_grad():   # ★ 여기 추가
         if np.random.rand() < args.uniform_ratio:
@@ -229,11 +234,23 @@ for i in trange(1, n_iterations + 1):
     memory.push_batch(all_states, all_actions, all_rewards, all_next_states, all_dones)
 
     if len(memory) > args.sac_batch_size:
+        # Accumulate losses over multiple updates
+        qf1_losses = []
+        qf2_losses = []
+        policy_losses = []
+        
         for _ in range(args.updates_per_step):
-            qf1_loss, qf2_loss, policy_loss = sac_agent.update_parameters(memory, args.sac_batch_size, sac_updates)
+            qf1_loss_step, qf2_loss_step, policy_loss_step = sac_agent.update_parameters(memory, args.sac_batch_size, sac_updates)
+            qf1_losses.append(qf1_loss_step)
+            qf2_losses.append(qf2_loss_step)
+            if policy_loss_step is not None:
+                policy_losses.append(policy_loss_step)
             sac_updates += 1
-        # Step the scheduler once per iteration (not per update)
-        sac_agent.policy_scheduler.step()
+        
+        # Average the losses
+        qf1_loss = sum(qf1_losses) / len(qf1_losses)
+        qf2_loss = sum(qf2_losses) / len(qf2_losses)
+        policy_loss = sum(policy_losses) / len(policy_losses) if len(policy_losses) > 0 else None
 
     if any(
         [
@@ -247,11 +264,12 @@ for i in trange(1, n_iterations + 1):
         log_dict = {
             "sac/critic_1_loss": qf1_loss,
             "sac/critic_2_loss": qf2_loss,
-            "sac/policy_loss": policy_loss,
             "sac/updates": sac_updates,
             "sac/replay_size": len(memory),
             "states_visited": i * BS,
         }
+        if policy_loss is not None:
+            log_dict["sac/policy_loss"] = policy_loss
 
         # Evaluate JSD every 500 iterations and add to the same log
         if i % args.n_evaluation_interval == 0:
@@ -277,9 +295,10 @@ for i in trange(1, n_iterations + 1):
         if USE_WANDB:
             wandb.log(log_dict, step=i)
 
+        policy_loss_str = f"{policy_loss:.3f}" if policy_loss is not None else "N/A"
         tqdm.write(
             # SAC losses and JSD
-            f"States: {(i + 1) * BS}, Critic: {qf1_loss:.3f}/{qf2_loss:.3f}, Policy: {policy_loss:.3f}, JSD: {jsd:.4f}, Replay: {len(memory)}"
+            f"States: {(i + 1) * BS}, Critic: {qf1_loss:.3f}/{qf2_loss:.3f}, Policy: {policy_loss_str}, JSD: {jsd:.4f}, Replay: {len(memory)}"
         )
 
 if USE_WANDB:

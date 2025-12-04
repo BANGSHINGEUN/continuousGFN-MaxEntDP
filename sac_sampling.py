@@ -7,7 +7,10 @@ def sample_actions(env, model, states):
     # states is a tensor of shape (n, dim)
     batch_size = states.shape[0]
     out = model.to_dist(states)
-    if isinstance(out[0], Distribution):  # s0 input
+    # Check if we're at the initial state (s0)
+    # For s0, model.to_dist returns (dist_r, dist_theta) - two Beta distributions
+    # For other states, it returns (exit_proba, dist) - a scalar/tensor and one Beta distribution
+    if isinstance(out[0], Distribution):  # s0 input: out = (dist_r, dist_theta)
         dist_r, dist_theta = out
         samples_r = dist_r.rsample(torch.Size((batch_size,)))
         samples_theta = dist_theta.rsample(torch.Size((batch_size,)))
@@ -31,16 +34,20 @@ def sample_actions(env, model, states):
             - np.log(env.delta)  # why ?
         )
 
-        exit_proba = torch.zeros((batch_size,),device=env.device)
-        actions_naive = actions
-        logprobs_naive = logprobs
+        exit_proba_naive = torch.zeros((batch_size,),device=env.device)
+        actions_naive = actions.clone()
+        logprobs_naive = logprobs.clone()
 
     else:
         exit_proba, dist = out
+        exit_proba = exit_proba.clamp(min=1e-8, max=1-1e-8)
 
-        exit = torch.bernoulli(exit_proba).bool()
-        exit[torch.norm(1 - states, dim=1) <= env.delta] = True
-        exit[torch.any(states >= 1 - env.epsilon, dim=-1)] = True
+        exit_proba_naive = exit_proba.clone()
+
+        exit_mask = torch.bernoulli(exit_proba).bool()
+        near_goal_mask = torch.norm(1 - states, dim=1) <= env.delta
+        boundary_mask  = torch.any(states >= 1 - env.epsilon, dim=-1)
+        exit = exit_mask | near_goal_mask | boundary_mask
         A = torch.where(
             states[:, 0] <= 1 - env.delta,
             0.0,
@@ -73,21 +80,21 @@ def sample_actions(env, model, states):
             - torch.log(B - A)
         )
 
-        logprobs_naive = logprobs.clone()
+        logprobs_naive = logprobs.clone() - torch.log(1 - exit_proba)
 
         actions[exit] = -float("inf")
         logprobs[exit] = torch.log(exit_proba[exit])
-        logprobs[torch.norm(1 - states, dim=1) <= env.delta] = 0.0
-        logprobs[torch.any(states >= 1 - env.epsilon, dim=-1)] = 0.0
+        logprobs[near_goal_mask] = 0.0
+        logprobs[boundary_mask] = 0.0
 
-        exit_proba[torch.norm(1 - states, dim=1) <= env.delta] = 1.0
-        exit_proba[torch.any(states >= 1 - env.epsilon, dim=-1)] = 1.0
-        actions_naive[torch.norm(1 - states, dim=1) <= env.delta] = -float("inf")
-        actions_naive[torch.any(states >= 1 - env.epsilon, dim=-1)] = -float("inf")
-        logprobs_naive[torch.norm(1 - states, dim=1) <= env.delta] = 0.0
-        logprobs_naive[torch.any(states >= 1 - env.epsilon, dim=-1)] = 0.0
+        exit_proba_naive[near_goal_mask] = 1.0
+        exit_proba_naive[boundary_mask] = 1.0
+        actions_naive[near_goal_mask] = -float("inf")
+        actions_naive[boundary_mask] = -float("inf")
+        logprobs_naive[near_goal_mask] = 0.0
+        logprobs_naive[boundary_mask] = 0.0
 
-    return actions, logprobs, exit_proba, actions_naive, logprobs_naive
+    return actions, logprobs, exit_proba_naive, actions_naive, logprobs_naive
 
 
 def sample_trajectories(env, model, n_trajectories):
@@ -177,4 +184,5 @@ def evaluate_backward_logprobs(env, model, trajectories):
     all_logprobs = torch.stack(all_logprobs, dim=1)
 
     return logprobs, all_logprobs.flip(1)
+
 
