@@ -32,7 +32,7 @@ def sample_actions(env, model, states):
             - torch.log(samples_r * env.delta)
             - np.log(np.pi / 2)
             - np.log(env.delta)  # why ?
-        )
+        ).clamp_max(100)
 
         exit_proba_naive = torch.zeros((batch_size,),device=env.device)
         actions_naive = actions.clone()
@@ -40,7 +40,7 @@ def sample_actions(env, model, states):
 
     else:
         exit_proba, dist = out
-        exit_proba = exit_proba.clamp(min=1e-8, max=1-1e-8)
+        exit_proba = exit_proba.clamp(min=1e-6, max=1-1e-6)
 
         exit_proba_naive = exit_proba.clone()
 
@@ -78,7 +78,7 @@ def sample_actions(env, model, states):
             - np.log(env.delta)
             - np.log(np.pi / 2)
             - torch.log(B - A)
-        )
+        ).clamp_max(100)
 
         logprobs_naive = logprobs.clone() - torch.log(1 - exit_proba)
 
@@ -162,7 +162,7 @@ def evaluate_backward_logprobs(env, model, trajectories):
                     1.0
                     / (B - A)
                     * (2.0 / torch.pi * torch.acos(difference_1 / env.delta) - A)
-                ).clamp(1e-4, 1 - 1e-4)
+                ).clamp(1e-6, 1 - 1e-6)
             ).clamp_max(100)
             - np.log(env.delta)
             - np.log(np.pi / 2)

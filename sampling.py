@@ -28,9 +28,10 @@ def sample_actions(env, model, states):
             - torch.log(samples_r * env.delta)
             - np.log(np.pi / 2)
             - np.log(env.delta)  # why ?
-        )
+        ).clamp_max(1e6)
     else:
         exit_proba, dist = out
+        exit_proba = exit_proba.clamp(min=1e-6, max=1-1e-6)
 
         exit = torch.bernoulli(exit_proba).bool()
         exit[torch.norm(1 - states, dim=1) <= env.delta] = True
@@ -63,7 +64,7 @@ def sample_actions(env, model, states):
             - np.log(env.delta)
             - np.log(np.pi / 2)
             - torch.log(B - A)
-        )
+        ).clamp_max(1e6)
 
         actions[exit] = -float("inf")
         logprobs[exit] = torch.log(exit_proba[exit])
@@ -129,8 +130,8 @@ def evaluate_backward_step_logprobs(env, model, current_states, previous_states)
                 1.0
                 / (B - A)
                 * (2.0 / torch.pi * torch.acos(difference_1 / env.delta) - A)
-            ).clamp(1e-4, 1 - 1e-4)
-        ).clamp_max(100)
+            ).clamp(1e-6, 1 - 1e-6)
+        ).clamp_max(1e6)
         - np.log(env.delta)
         - np.log(np.pi / 2)
         - torch.log(B - A)

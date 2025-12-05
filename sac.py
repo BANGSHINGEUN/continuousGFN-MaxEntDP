@@ -18,9 +18,9 @@ class SAC(object):
         self.device = env.device
         self.tau = args.tau
         self.env = env  # Store env for sample_actions
-        self.critic = QNetwork(env.dim, env.dim, args.Critic_hidden_size).to(device=self.device)
+        self.critic = QNetwork(env.dim, env.dim, args.Critic_hidden_size, bias_value=args.bias_value).to(device=self.device)
         self.critic_optim = Adam(self.critic.parameters(), lr=args.lr)
-        self.critic_target = QNetwork(env.dim, env.dim, args.Critic_hidden_size).to(self.device)
+        self.critic_target = QNetwork(env.dim, env.dim, args.Critic_hidden_size, bias_value=args.bias_value).to(self.device)
         hard_update(self.critic_target, self.critic)
         self.policy = CirclePF(
             hidden_dim=args.hidden_dim,
@@ -35,8 +35,25 @@ class SAC(object):
             milestones=[i * args.scheduler_milestone for i in range(1, 10)],
             gamma=args.gamma_scheduler,
         )
+        self.total_steps = args.n_iterations * args.updates_per_step
+        self.warmup_ratio = args.alpha_warmup_ratio
+        self.ramp_ratio = args.alpha_ramp_ratio
+        self.start_alpha_d = args.alpha_start_d
+        self.start_alpha_c = args.alpha_start_c
+
+    def get_alpha(self, current_step):
+        warmup_steps = self.total_steps * self.warmup_ratio
+        ramp_steps = self.total_steps * self.ramp_ratio
+        end_ramp_step = warmup_steps + ramp_steps
+        if current_step < warmup_steps:
+            return self.start_alpha_d, self.start_alpha_c
+        elif current_step < end_ramp_step:
+            return self.start_alpha_d + (1.0 - self.start_alpha_d) * (current_step - warmup_steps) / ramp_steps, self.start_alpha_c + (1.0 - self.start_alpha_c) * (current_step - warmup_steps) / ramp_steps
+        else:
+            return 1.0, 1.0
 
     def update_parameters(self, memory, batch_size, updates):
+        alpha_d, alpha_c = self.get_alpha(updates)
         # Sample a batch from memory
         state_batch, action_batch, reward_batch, next_state_batch, done_batch = memory.sample(batch_size=batch_size)
 
@@ -57,12 +74,12 @@ class SAC(object):
 
             is_inf_mask = torch.all(torch.isinf(next_state_action_naive), dim=-1)
             #1. 반드시 terminal state에 도달하는 경우
-            target_q_value += next_state_exit_proba * (self.env.reward(next_state_not_done).log() - next_state_exit_proba.log())
+            target_q_value += next_state_exit_proba * (self.env.reward(next_state_not_done).log() - alpha_d * next_state_exit_proba.log())
 
             #2. 반드시 terminal state에 도달하지 않아도 되는 경우 
             qf1_next_target, qf2_next_target = self.critic_target(next_state_not_done[~is_inf_mask], next_state_action_naive[~is_inf_mask])
             min_qf_next_target = torch.min(qf1_next_target, qf2_next_target).squeeze(-1) 
-            target_q_value[~is_inf_mask] += (1 - next_state_exit_proba[~is_inf_mask]) * (min_qf_next_target - ((1 - next_state_exit_proba[~is_inf_mask]).log() + next_state_log_pi_naive[~is_inf_mask]))
+            target_q_value[~is_inf_mask] += (1 - next_state_exit_proba[~is_inf_mask]) * (min_qf_next_target - (alpha_d * (1 - next_state_exit_proba[~is_inf_mask]).log() + alpha_c * next_state_log_pi_naive[~is_inf_mask]))
 
         qf1, qf2 = self.critic(state_batch[~done_mask], action_batch[~done_mask])  # Two Q-functions to mitigate positive bias in the policy improvement step
         qf1 = qf1.squeeze(-1)
@@ -102,14 +119,14 @@ class SAC(object):
             is_non_zero_mask = torch.where(exit_proba != 0, True, False)
             policy_loss = torch.zeros_like(exit_proba).squeeze(-1)
 
-            policy_loss[is_non_zero_mask] += exit_proba[is_non_zero_mask] * (exit_proba[is_non_zero_mask].log() - self.env.reward(state_batch_reordered[is_non_zero_mask]).log())
+            policy_loss[is_non_zero_mask] += exit_proba[is_non_zero_mask] * (alpha_d * exit_proba[is_non_zero_mask].log() - self.env.reward(state_batch_reordered[is_non_zero_mask]).log())
 
             qf1_pi, qf2_pi = self.critic(state_batch_reordered[~is_inf_mask], action_naive[~is_inf_mask])
 
             min_qf_pi = torch.min(qf1_pi, qf2_pi)
             min_qf_pi = min_qf_pi.squeeze(-1)
             
-            policy_loss[~is_inf_mask] += (1 - exit_proba[~is_inf_mask]) * ((1 - exit_proba[~is_inf_mask]).log() + log_pi_naive[~is_inf_mask] - min_qf_pi)
+            policy_loss[~is_inf_mask] += (1 - exit_proba[~is_inf_mask]) * (alpha_d * (1 - exit_proba[~is_inf_mask]).log() + alpha_c * log_pi_naive[~is_inf_mask] - min_qf_pi)
             policy_loss = policy_loss.mean()
 
             self.policy_optim.zero_grad()

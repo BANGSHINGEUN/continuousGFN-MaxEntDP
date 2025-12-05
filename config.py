@@ -4,7 +4,7 @@ Modify the values below to change the training configuration.
 """
 
 # Device configuration
-DEVICE = "cuda:0"  # Options: "cuda:0", "cuda:1", "cpu", etc.
+DEVICE = "cuda:2"  # Options: "cuda:0", "cuda:1", "cpu", etc.
 
 # Environment parameters
 DIM = 2
@@ -14,10 +14,10 @@ REWARD_DEBUG = False
 
 # Reward configuration
 # To change reward-specific parameters (radius, sigma, etc.), edit rewards.py directly
-REWARD_TYPE = "baseline"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "corner_small_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares", "debug"
+REWARD_TYPE = "curve"  # Options: "baseline", "ring", "angular_ring", "multi_ring", "curve", "gaussian_mixture", "corner_squares", "corner_small_squares", "two_corners", "edge_boxes", "edge_boxes_corner_squares", "debug"
 R0 = 0.1 # Baseline reward
-R1 = 0.5   # Medium reward (e.g., outer square in corner_squares)
-R2 = 2 # High reward (e.g., inner square in corner_squares)
+R1 = 1   # Medium reward (e.g., outer square in corner_squares)
+R2 = 10 # High reward (e.g., inner square in corner_squares)
 
 # Model parameters
 N_COMPONENTS = 1  # Number of components in Mixture Of Betas
@@ -49,4 +49,4 @@ REPLAY_SIZE = 256
 NO_PLOT = False
 NO_WANDB = False
 
-WANDB_PROJECT = "CGFN_SAC"
+WANDB_PROJECT = "CGFN-SAC-RING"

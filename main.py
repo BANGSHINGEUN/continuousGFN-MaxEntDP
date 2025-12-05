@@ -23,6 +23,7 @@ from utils import (
     plot_samples,
     estimate_jsd,
     plot_trajectories,
+    plot_termination_probabilities,
 )
 
 import config
@@ -318,10 +319,12 @@ for i in trange(n_iterations):
                 colors = plt.cm.rainbow(np.linspace(0, 1, 10))
                 fig1 = plot_samples(last_states[:2000].detach().cpu().numpy())
                 fig2 = plot_trajectories(trajectories.detach().cpu().numpy()[:20])
+                fig3 = plot_termination_probabilities(model)
 
                 log_dict["last_states"] = wandb.Image(fig1)
                 log_dict["trajectories"] = wandb.Image(fig2)
                 log_dict["kde"] = wandb.Image(fig4)
+                log_dict["termination_probabilities"] = wandb.Image(fig3)
 
         if USE_WANDB:
             wandb.log(log_dict, step=i)

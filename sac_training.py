@@ -23,6 +23,7 @@ from utils import (
     plot_samples,
     estimate_jsd,
     plot_trajectories,
+    plot_termination_probabilities,
 )
 
 import config
@@ -98,6 +99,11 @@ parser.add_argument("--replay_size", type=int, default=sac_config.REPLAY_SIZE, h
 parser.add_argument("--sac_batch_size", type=int, default=sac_config.SAC_BATCH_SIZE, help="SAC batch size")
 parser.add_argument("--updates_per_step", type=int, default=sac_config.UPDATES_PER_STEP, help="SAC updates per step")
 parser.add_argument("--without_backward_model", type=bool, default=sac_config.WITHOUT_BACKWARD_MODEL, help="Whether to use backward model")
+parser.add_argument("--bias_value", type=float, default=sac_config.BIAS_VALUE, help="Bias value for critic networks")
+parser.add_argument("--alpha_start_d", type=float, default=sac_config.ALPHA_START_D, help="Start value for alpha_d")
+parser.add_argument("--alpha_start_c", type=float, default=sac_config.ALPHA_START_C, help="Start value for alpha_c")
+parser.add_argument("--alpha_warmup_ratio", type=float, default=sac_config.ALPHA_WARMUP_RATIO, help="Warmup ratio for alpha")
+parser.add_argument("--alpha_ramp_ratio", type=float, default=sac_config.ALPHA_RAMP_RATIO, help="Ramp ratio for alpha")
 args = parser.parse_args()
 
 if args.no_plot:
@@ -127,6 +133,7 @@ if args.without_backward_model:
     run_name += f"_without_backward_model"
 run_name += f"_R0,R1,R2_{args.R0},{args.R1},{args.R2}"
 run_name += f"_tau{args.tau}"
+run_name += f"_bias_value{args.bias_value}"
 run_name += f"_BS{BS}"
 run_name += f"_replay_size{args.replay_size}"
 run_name += f"_sac_batch_size{args.sac_batch_size}"
@@ -287,10 +294,13 @@ for i in trange(1, n_iterations + 1):
                 colors = plt.cm.rainbow(np.linspace(0, 1, 10))
                 fig1 = plot_samples(last_states[:2000].detach().cpu().numpy())
                 fig2 = plot_trajectories(trajectories.detach().cpu().numpy()[:20])
+                fig3 = plot_termination_probabilities(sac_agent.policy)
 
                 log_dict["last_states"] = wandb.Image(fig1)
                 log_dict["trajectories"] = wandb.Image(fig2)
                 log_dict["kde"] = wandb.Image(fig4)
+                log_dict["termination_probabilities"] = wandb.Image(fig3)
+                
 
         if USE_WANDB:
             wandb.log(log_dict, step=i)

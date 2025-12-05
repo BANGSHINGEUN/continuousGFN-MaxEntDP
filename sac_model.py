@@ -10,7 +10,7 @@ def weights_init_(m):
         torch.nn.init.constant_(m.bias, 0)
 
 class QNetwork(nn.Module):
-    def __init__(self, num_inputs, num_actions, hidden_dim):
+    def __init__(self, num_inputs, num_actions, hidden_dim, bias_value=5.0):
         super(QNetwork, self).__init__()
 
         # Q1 architecture
@@ -25,7 +25,10 @@ class QNetwork(nn.Module):
 
         self.apply(weights_init_)
 
-    def forward(self, state, action):
+        torch.nn.init.constant_(self.linear3.bias, bias_value) 
+        torch.nn.init.constant_(self.linear6.bias, bias_value)
+
+    def forward(self, state, action):   
         xu = torch.cat([state, action], 1)
         
         x1 = F.relu(self.linear1(xu))
